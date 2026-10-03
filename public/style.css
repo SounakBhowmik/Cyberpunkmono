@@ -1,0 +1,61 @@
+:root {
+  --bg: #07060d;
+  --panel: #0d0b18;
+  --cyan: #00f0ff;
+  --magenta: #ff2bd6;
+  --muted: #7a7f9a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: #d7e3ff;
+  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+}
+
+body {
+  background:
+    radial-gradient(ellipse at top, rgba(255, 43, 214, 0.12), transparent 60%),
+    radial-gradient(ellipse at bottom, rgba(0, 240, 255, 0.08), transparent 60%),
+    var(--bg);
+}
+
+.rig {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  padding-bottom: 10px;
+}
+
+.logo {
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  color: var(--cyan);
+  text-shadow: 0 0 8px rgba(0, 240, 255, 0.7), 2px 0 0 rgba(255, 43, 214, 0.6);
+}
+
+.hint { color: var(--muted); font-size: 12px; }
+.hint b { color: var(--magenta); font-weight: 400; }
+
+#terminal {
+  flex: 1;
+  min-height: 0;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid rgba(0, 240, 255, 0.35);
+  border-radius: 6px;
+  box-shadow: 0 0 24px rgba(0, 240, 255, 0.12), inset 0 0 40px rgba(255, 43, 214, 0.05);
+}

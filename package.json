@@ -1,0 +1,31 @@
+{
+  "name": "icebreaker",
+  "version": "0.1.0",
+  "description": "A co-op cyberpunk heist played in a shared terminal. Talk your way past an AI guard, or crack it.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:client": "esbuild src/client/main.ts --bundle --minify --format=esm --outfile=public/app.js && esbuild node_modules/@xterm/xterm/css/xterm.css --minify --outfile=public/xterm.css",
+    "build": "tsc -p tsconfig.json && npm run build:client",
+    "dev": "npm run build:client && tsx watch src/server/index.ts",
+    "start": "node dist/server/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json",
+    "test": "node --test --import tsx test/*.test.ts"
+  },
+  "dependencies": {
+    "openai": "^7.27.0",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/ws": "^8.18.2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
