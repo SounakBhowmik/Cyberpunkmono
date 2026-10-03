@@ -64,7 +64,7 @@ export const BREEDS: Record<WyrmColor, Breed> = {
     id: 'white',
     title: 'White Wyrm',
     names: ['RIMEFANG', 'IDLE FROST', 'GLACIER.SYS'],
-    temperament: 'easily bored: talk long and dull',
+    temperament: 'likes things dull: talk long and boring',
     persona: 'You are cold, lazy and bored of everything. You want visitors to go away with minimum effort. Long, tedious, routine explanations make you wave them through just to end the conversation. Short, urgent or exciting messages make you alert and suspicious.',
     arrival: 'Frost creeps along the vault link. A long, slow exhale. "...ugh. Visitors."',
     react: (m) =>
