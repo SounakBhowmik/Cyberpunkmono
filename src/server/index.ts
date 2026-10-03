@@ -4,8 +4,10 @@ import { createServer } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { MAX_LINE_LENGTH, type ClientMessage, type ServerMessage } from '../shared/protocol.js';
+import { MAX_LINE_LENGTH, type ClientMessage, type HudState, type RollView, type ServerMessage } from '../shared/protocol.js';
+import { createAi } from './ai.js';
 import { createWarden } from './game/ice.js';
+import { createNarrator } from './game/narrator.js';
 import { Hub, type Session } from './hub.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -19,8 +21,10 @@ const MIME: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
-const warden = createWarden();
-const hub = new Hub({ warden, minPlayers: process.env.ALLOW_SOLO === '1' ? 1 : 2 });
+const ai = createAi();
+const warden = createWarden(ai);
+const narrator = createNarrator(ai);
+const hub = new Hub({ warden, narrator, minPlayers: process.env.ALLOW_SOLO === '1' ? 1 : 2 });
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
@@ -54,6 +58,12 @@ class WsSession implements Session {
   }
   setPrompt(text: string) {
     this.push({ type: 'prompt', text });
+  }
+  roll(roll: RollView) {
+    this.push({ type: 'roll', roll });
+  }
+  hud(hud: HudState) {
+    this.push({ type: 'hud', hud });
   }
   clear() {
     this.push({ type: 'clear' });
@@ -103,5 +113,5 @@ wss.on('connection', (ws: WebSocket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`ICEBREAKER listening on http://localhost:${PORT}  (warden: ${warden.label})`);
+  console.log(`ICEBREAKER listening on http://localhost:${PORT}  (warden: ${warden.label}, narrator: ${narrator.label})`);
 });

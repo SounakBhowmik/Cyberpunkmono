@@ -1,3 +1,6 @@
+import type { WyrmColor } from '../../shared/protocol.js';
+import { MONSTERS, PROGRAMS, PROGRAM_IDS, type MonsterSpec, type ProgramId } from './bestiary.js';
+import { BREEDS, BREED_IDS, type Breed } from './breeds.js';
 import { Rng } from './rng.js';
 
 export type IntelKind = 'fragment' | 'personnel' | 'comms';
@@ -6,6 +9,8 @@ export interface FileEntry {
   name: string;
   body: string;
   intel?: IntelKind;
+  /** A program the runner can take into the party deck. */
+  program?: ProgramId;
 }
 
 export interface NetNode {
@@ -29,6 +34,8 @@ export interface Intel {
 export interface World {
   seed: number;
   corp: string;
+  district: string;
+  breed: Breed;
   wardenName: string;
   nodes: Map<string, NetNode>;
   /** Middle-layer node ids, in generation order (excludes gateway and vault). */
@@ -37,13 +44,21 @@ export interface World {
   gateId: string;
   passcode: string;
   intel: Intel;
+  /** ICE monsters lairing in nodes, keyed by node id. */
+  monsters: Map<string, MonsterSpec>;
 }
 
 export const GATEWAY = 'gateway';
 export const VAULT = 'vault';
 
 const CORPS = ['Arasaka-Vey', 'Kiroshi Dynamics', 'Militech Halcyon', 'Zetatech Lumen', 'Biotechnica Rho', 'Petrochem Atlas'];
-const WARDENS = ['CERBERUS-7', 'WARDEN//NIX', 'MOTHER-OF-LOCKS', 'BASTION.EXE', 'GATEKEEPER-9'];
+export const DISTRICTS = [
+  'the Undercroft, where the old subway kings hold court',
+  'Glasswater, the drowned financial quarter',
+  'Spire Row, where the towers scrape the smog',
+  'the Ashmarket, bazaar of stolen chrome',
+  'Lantern Hill, the shrine district',
+];
 const FIRST = ['Mira', 'Tomasz', 'Akira', 'Delphine', 'Okonkwo', 'Rhea', 'Viktor', 'Priya', 'Jun', 'Ines'];
 const LAST = ['Voss', 'Halloran', 'Nakamura', 'Ferreira', 'Adeyemi', 'Lindqvist', 'Moreau', 'Kapoor', 'Takeda', 'Okafor'];
 const PETS = ['Biscuit', 'Nebula', 'Pixel', 'Mochi', 'Turbo', 'Gizmo', 'Sardine', 'Kernel'];
@@ -76,7 +91,9 @@ const FLAVOR: ((corp: string) => FileEntry)[] = [
 export function generateWorld(seed: number): World {
   const rng = new Rng(seed);
   const corp = rng.pick(CORPS);
-  const wardenName = rng.pick(WARDENS);
+  const district = rng.pick(DISTRICTS);
+  const breed = BREEDS[rng.pick(BREED_IDS) as WyrmColor];
+  const wardenName = rng.pick(breed.names);
 
   const first = rng.pick(FIRST);
   const adminLast = rng.pick(LAST);
@@ -156,16 +173,27 @@ export function generateWorld(seed: number): World {
     node.files = rng.shuffle(node.files);
   });
 
+  // Two program caches, and two ICE lairs (never on the wyrm's doorstep).
+  for (const id of rng.shuffle(middle).slice(0, 2)) {
+    const spec = PROGRAMS[rng.pick(PROGRAM_IDS)];
+    const node = nodes.get(id)!;
+    if (!node.files.some((f) => f.name === spec.file)) node.files.push({ name: spec.file, program: spec.id, body: spec.blurb });
+  }
+  const monsters = new Map<string, MonsterSpec>();
+  const lairs = rng.shuffle(middle.filter((id) => id !== gateId)).slice(0, 2);
+  const kinds = rng.shuffle(MONSTERS);
+  lairs.forEach((id, i) => monsters.set(id, kinds[i]!));
+
   nodes.get(GATEWAY)!.files.push({
     name: 'welcome.txt',
-    body: `Welcome to the ${corp} guest network. All activity is monitored. All monitoring is monitored.`,
+    body: `Welcome to the ${corp} guest network. All activity is monitored. All monitoring is monitored.\nBeneath the tower sleeps ${wardenName}, a ${breed.title}. Staff are reminded not to wake it.`,
   });
   nodes.get(VAULT)!.files.push({
     name: 'payload.dat',
     body: '01110000 01100001 01111001 01100100 01100001 01111001 ... (encrypted. type download to pull it)',
   });
 
-  return { seed, corp, wardenName, nodes, middle, gateId, passcode, intel };
+  return { seed, corp, district, breed, wardenName, nodes, middle, gateId, passcode, intel, monsters };
 }
 
 export function bfsDepths(nodes: Map<string, NetNode>, from: string): Map<string, number> {

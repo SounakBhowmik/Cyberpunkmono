@@ -1,7 +1,7 @@
 {
   "name": "icebreaker",
   "version": "0.1.0",
-  "description": "A co-op cyberpunk heist played in a shared terminal. Talk your way past an AI guard, or crack it.",
+  "description": "A co-op cyberpunk dungeon delve in a shared terminal. Fight ICE, roll the dice, and talk your way past an AI wyrm.",
   "type": "module",
   "private": true,
   "engines": {
@@ -13,7 +13,8 @@
     "dev": "npm run build:client && tsx watch src/server/index.ts",
     "start": "node dist/server/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json",
-    "test": "node --test --import tsx test/*.test.ts"
+    "test": "node --test --import tsx test/*.test.ts",
+    "balance": "tsx scripts/balance.mts"
   },
   "dependencies": {
     "openai": "^7.27.0",

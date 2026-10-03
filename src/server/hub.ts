@@ -1,13 +1,17 @@
 import { randomInt } from 'node:crypto';
+import type { HudState, RollView } from '../shared/protocol.js';
 import { BANNER, c } from './ansi.js';
 import { Game, type GamePlayer } from './game/game.js';
 import type { WardenBrain } from './game/ice.js';
+import type { Narrator } from './game/narrator.js';
 
 /** A connected terminal, independent of transport (WebSocket today, SSH later). */
 export interface Session {
   readonly id: string;
   send(text: string): void;
   setPrompt(text: string): void;
+  roll(roll: RollView): void;
+  hud(hud: HudState): void;
   clear(): void;
   close(): void;
 }
@@ -30,6 +34,12 @@ class Player implements GamePlayer {
   setPrompt(text: string) {
     this.session.setPrompt(text);
   }
+  showRoll(roll: RollView) {
+    this.session.roll(roll);
+  }
+  setHud(hud: HudState) {
+    this.session.hud(hud);
+  }
 }
 
 interface Room {
@@ -45,8 +55,10 @@ const HANDLE_RE = /^[A-Za-z0-9_-]{2,16}$/;
 
 export interface HubOptions {
   warden: WardenBrain;
+  narrator?: Narrator;
   minPlayers?: number;
   tickMs?: number;
+  roundMs?: number;
 }
 
 export class Hub {
@@ -65,7 +77,10 @@ export class Hub {
     p.send(
       [
         BANNER,
-        c.dim('  a co-op heist for 2-4 netrunners · one corp · one very insecure AI'),
+        c.dim('  a co-op dungeon delve for 2-4 netrunners · Neo-Avalon, 2077'),
+        '',
+        c.italic('In Neo-Avalon the corporations keep their secrets the old way: in vaults, guarded by'),
+        c.italic('ancient AI wyrms chained beneath their towers. You are a crew of netrunners. Tonight you delve.'),
         '',
         'pick a handle, choom.',
       ].join('\n'),
@@ -107,6 +122,17 @@ export class Hub {
     p.state = 'lobby';
     p.send(`welcome to the net, ${c.bold(text)}.\n${this.lobbyHelp()}`);
     p.setPrompt(`${c.magenta(p.handle)}> `);
+    p.setHud({ mode: 'street', handle: p.handle });
+  }
+
+  private pushSafehouseHud(room: Room) {
+    for (const q of room.players) {
+      q.setHud({
+        mode: 'safehouse',
+        code: room.code,
+        party: room.players.map((r) => ({ handle: r.handle, classes: [], you: r === q, host: r === room.host })),
+      });
+    }
   }
 
   private lobbyHelp() {
@@ -147,7 +173,7 @@ export class Hub {
     const room = this.rooms.get(code);
     if (!code) return p.send(c.dim('usage: join <code>'));
     if (!room) return p.send(c.red(`no safehouse called ${code}.`));
-    if (room.game) return p.send(c.red(`${code} is mid-heist. wait for them to finish.`));
+    if (room.game) return p.send(c.red(`${code} is mid-delve. wait for them to finish.`));
     if (room.players.length >= MAX_PLAYERS) return p.send(c.red(`${code} is full (${MAX_PLAYERS} max).`));
     if (room.players.some((q) => q.handle.toLowerCase() === p.handle.toLowerCase())) {
       return p.send(c.red(`someone in ${code} already goes by ${p.handle}. reconnect with another handle.`));
@@ -162,6 +188,7 @@ export class Hub {
     this.toRoom(room, c.magenta(`>> ${p.handle} entered the safehouse (${room.players.length}/${MAX_PLAYERS})`));
     p.send(this.roomHelp(room, p));
     p.setPrompt(this.roomPrompt(p));
+    this.pushSafehouseHud(room);
   }
 
   // ---------------------------------------------------------------- room
@@ -176,7 +203,7 @@ export class Hub {
       `  ${c.cyan('who'.padEnd(12))}${c.dim('who is here')}`,
       `  ${c.cyan('leave'.padEnd(12))}${c.dim('back to the lobby')}`,
     ];
-    if (room.host === p) lines.unshift(`  ${c.cyan('start'.padEnd(12))}${c.dim(`begin the heist (needs ${this.minPlayers}+ players)`)}`);
+    if (room.host === p) lines.unshift(`  ${c.cyan('start'.padEnd(12))}${c.dim(`begin the delve (needs ${this.minPlayers}+ players)`)}`);
     return lines.join('\n');
   }
 
@@ -207,11 +234,15 @@ export class Hub {
     this.toRoom(room, c.cyan('\n>> jacking in...'));
     room.game = new Game(room.players, {
       warden: this.opts.warden,
+      narrator: this.opts.narrator,
+      code: room.code,
       tickMs: this.opts.tickMs,
+      roundMs: this.opts.roundMs,
       onEnd: () => {
         room.game = undefined;
         for (const q of room.players) q.setPrompt(this.roomPrompt(q));
-        this.toRoom(room, c.dim(`back in the safehouse. ${room.host.handle} can start another job.`));
+        this.toRoom(room, c.dim(`back in the safehouse. ${room.host.handle} can start another delve.`));
+        setTimeout(() => this.pushSafehouseHud(room), 4000);
       },
     });
   }
@@ -232,12 +263,14 @@ export class Hub {
       if (room.game && room.players.length < this.minPlayers) {
         this.toRoom(room, c.dim('(not enough crew left to finish properly, but you can try.)'));
       }
+      if (!room.game) this.pushSafehouseHud(room);
     }
 
     if (!disconnected) {
       p.state = 'lobby';
       p.send(`back on the street.\n${this.lobbyHelp()}`);
       p.setPrompt(`${c.magenta(p.handle)}> `);
+      p.setHud({ mode: 'street', handle: p.handle });
     }
   }
 
