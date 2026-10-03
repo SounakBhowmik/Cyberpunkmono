@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { MAX_LINE_LENGTH, type ClientMessage, type HudState, type RollView, type ServerMessage } from '../shared/protocol.js';
+import { MAX_LINE_LENGTH, type ClientMessage, type ActionButton, type Fx, type HudState, type RollView, type SceneState, type ServerMessage } from '../shared/protocol.js';
 import { createAi } from './ai.js';
 import { createWarden } from './game/ice.js';
 import { createNarrator } from './game/narrator.js';
@@ -64,6 +64,12 @@ class WsSession implements Session {
   }
   hud(hud: HudState) {
     this.push({ type: 'hud', hud });
+  }
+  scene(scene: SceneState, actions: ActionButton[]) {
+    this.push({ type: 'scene', scene, actions });
+  }
+  fx(fx: Fx) {
+    this.push({ type: 'fx', fx });
   }
   clear() {
     this.push({ type: 'clear' });

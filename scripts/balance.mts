@@ -1,7 +1,7 @@
 import { Game } from '../src/server/game/game.js';
 import { ScriptedWarden } from '../src/server/game/ice.js';
 import { GATEWAY, VAULT } from '../src/server/game/world.js';
-const mk = (id: string) => ({ id, handle: id, send() {}, setPrompt() {}, showRoll() {}, setHud() {} });
+const mk = (id: string) => ({ id, handle: id, send() {}, setPrompt() {}, showRoll() {}, setHud() {}, setScene() {}, fx() {} });
 const PASSIVE_PER_ACTION = Number(process.env.PASSIVE ?? 0.6); // ~20s tick, ~12s per action
 let wins = 0, traces: number[] = [], fights = 0;
 const N = 400;

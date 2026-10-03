@@ -1,5 +1,5 @@
 import { randomInt } from 'node:crypto';
-import type { HudState, RollView } from '../shared/protocol.js';
+import type { ActionButton, Fx, HudState, RollView, SceneState } from '../shared/protocol.js';
 import { BANNER, c } from './ansi.js';
 import { Game, type GamePlayer } from './game/game.js';
 import type { WardenBrain } from './game/ice.js';
@@ -12,6 +12,8 @@ export interface Session {
   setPrompt(text: string): void;
   roll(roll: RollView): void;
   hud(hud: HudState): void;
+  scene(scene: SceneState, actions: ActionButton[]): void;
+  fx(fx: Fx): void;
   clear(): void;
   close(): void;
 }
@@ -39,6 +41,12 @@ class Player implements GamePlayer {
   }
   setHud(hud: HudState) {
     this.session.hud(hud);
+  }
+  setScene(scene: SceneState, actions: ActionButton[]) {
+    this.session.scene(scene, actions);
+  }
+  fx(fx: Fx) {
+    this.session.fx(fx);
   }
 }
 
@@ -222,7 +230,7 @@ export class Hub {
       case 'help':
         return p.send(this.roomHelp(room, p));
       default:
-        return p.send(c.dim(`unknown command. type help.`));
+        return this.toRoom(room, `${c.magenta(`[${p.handle}]`)} ${text}`);
     }
   }
 

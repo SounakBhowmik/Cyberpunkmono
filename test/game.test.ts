@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { HudState, RollView } from '../src/shared/protocol.js';
+import type { ActionButton, Fx, HudState, RollView, SceneState } from '../src/shared/protocol.js';
 import { Game, type GamePlayer, type GameResult } from '../src/server/game/game.js';
 import { ScriptedWarden, intelMentioned, parseVerdict, type WardenBrain } from '../src/server/game/ice.js';
 import { GATEWAY, VAULT, generateWorld, type World } from '../src/server/game/world.js';
@@ -25,6 +25,16 @@ class FakePlayer implements GamePlayer {
   }
   setHud(hud: HudState) {
     this.hud = hud;
+  }
+  scene?: SceneState;
+  actions: ActionButton[] = [];
+  fxs: Fx[] = [];
+  setScene(scene: SceneState, actions: ActionButton[]) {
+    this.scene = scene;
+    this.actions = actions;
+  }
+  fx(fx: Fx) {
+    this.fxs.push(fx);
   }
   get transcript() {
     return this.out.join('\n');
@@ -286,4 +296,56 @@ test('the HUD tracks the delve', () => {
   assert.equal(hud.party.filter((m) => m.you).length, 1);
   game.addTrace(30, 'test');
   assert.equal(runner.hud?.mode === 'delve' && runner.hud.trace, 30);
+});
+
+test('each role sees a different map', () => {
+  const { game, byRole } = setup();
+  const runner = byRole('RUNNER');
+  const op = byRole('OPERATOR');
+  const sentry = byRole('SENTRY');
+  const lockedIds = [...game.world.nodes.values()].filter((n) => n.locked && n.id !== VAULT).map((n) => n.id);
+
+  // rogue: fog of war, no ports, no patrol
+  const rs = runner.scene!;
+  assert.equal(rs.patrolAt, undefined);
+  assert.ok(rs.rooms.some((r) => r.known === 'hidden'), 'unexplored rooms are hidden');
+  assert.ok(rs.rooms.every((r) => r.port === undefined), 'the rogue never sees ports');
+  assert.ok(rs.rooms.filter((r) => r.known === 'hidden').every((r) => r.label === ''), 'hidden rooms leak no labels');
+
+  // mage: everything, including ports and lairs
+  const os = op.scene!;
+  assert.ok(os.rooms.every((r) => r.known === 'full'));
+  for (const id of lockedIds) assert.equal(os.rooms.find((r) => r.id === id)!.port, game.world.nodes.get(id)!.port);
+  assert.equal(os.rooms.filter((r) => r.lair).length, game.world.monsters.size);
+
+  // cleric: the patrol
+  assert.equal(sentry.scene!.patrolAt, game.patrolAt);
+});
+
+test('buttons follow the situation', () => {
+  const { game, byRole, players } = setup();
+  const runner = byRole('RUNNER');
+  const first = game.world.nodes.get(GATEWAY)!.links[0]!;
+  const node = game.world.nodes.get(first)!;
+  const want = node.locked ? `crack ${first} ` : `move ${first}`;
+  assert.ok(runner.actions.some((a) => a.cmd === want), `rogue gets ${want.trim()}`);
+  assert.ok(runner.actions.some((a) => a.cmd === 'cat welcome.txt'));
+  assert.ok(byRole('SENTRY').actions.some((a) => a.cmd === 'spoof'));
+
+  walkToGate(game, players);
+  assert.equal(runner.scene!.view, 'parley');
+  assert.ok(runner.actions.some((a) => a.cmd === 'talk ' && a.input));
+});
+
+test('anything that is not a command is crew chat', () => {
+  const { game, players } = setup();
+  game.handle(players[0]!.id, 'anyone else hear that humming');
+  for (const p of players) assert.match(p.transcript, /\[alice\] anyone else hear that humming/);
+});
+
+test('the intro and the ending play as scene effects', () => {
+  const { game, players } = setup();
+  assert.equal(players[0]!.fxs[0]?.kind, 'intro');
+  game.addTrace(100, 'test');
+  assert.ok(players[0]!.fxs.some((f) => f.kind === 'end' && !f.win));
 });

@@ -29,7 +29,7 @@ body {
   height: 100%;
   max-width: 1100px;
   margin: 0 auto;
-  padding: 16px;
+  padding: 12px 16px;
 }
 
 header {
@@ -51,8 +51,8 @@ header {
 .hint b { color: var(--magenta); font-weight: 400; }
 
 #terminal {
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 30vh;
+  min-height: 150px;
   padding: 10px;
   background: var(--panel);
   border: 1px solid rgba(0, 240, 255, 0.35);
@@ -143,4 +143,58 @@ header {
   #hud .bar { width: 70px; }
   #hud .wyrm { margin-left: 0; }
   #hud .roll { display: none; }
+}
+
+/* ------------------------------------------------------------ stage */
+
+.stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 220px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 43, 214, 0.35);
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 0 30px rgba(255, 43, 214, 0.12);
+  background: #05040a;
+}
+
+.stage canvas { display: block; position: absolute; inset: 0; }
+
+#actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 34px;
+  margin-bottom: 8px;
+}
+
+.act {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  color: #d7e3ff;
+  background: rgba(13, 11, 24, 0.9);
+  border: 1px solid rgba(215, 227, 255, 0.25);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: transform 0.08s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.act:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 0 12px currentColor; }
+.act:active:not(:disabled) { transform: translateY(1px); }
+.act:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.act:disabled { opacity: 0.4; cursor: default; }
+.act.tone-go { color: #39ff88; border-color: rgba(57, 255, 136, 0.6); }
+.act.tone-risk { color: #ffe600; border-color: rgba(255, 230, 0, 0.6); }
+.act.tone-fight { color: #ff3860; border-color: rgba(255, 56, 96, 0.7); }
+.act.tone-magic { color: #ff9cf0; border-color: rgba(255, 43, 214, 0.6); }
+.act.tone-talk { color: #00f0ff; border-color: rgba(0, 240, 255, 0.7); }
+.act.tone-info { color: #a9b3d6; }
+.act.toggle { margin-right: 6px; }
+.act-hint { color: var(--muted); font-size: 12px; align-self: center; }
+
+@media (max-width: 600px) {
+  .stage { min-height: 200px; }
+  #terminal { flex-basis: 32vh; }
+  .act { font-size: 12px; padding: 6px 9px; }
 }

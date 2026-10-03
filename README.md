@@ -4,11 +4,13 @@ A co-op cyberpunk dungeon delve for 2-4 players, played in a shared terminal in 
 
 In Neo-Avalon the corporations keep their secrets the old way: in vaults, guarded by ancient AI wyrms chained beneath their towers. Your crew delves a corp's network like a dungeon. Rooms are nodes, ICE programs are the monsters, and the vault is a dragon's hoard. Pull `payload.dat` out before the trace meter hits 100%.
 
+It plays like a little arcade cabinet. The top of the screen is an animated neon scene: a rain-soaked city intro, a dungeon map where your rogue glides between rooms while packets flow down the corridors, turn-based fights against animated ICE monsters, a big d20 that tumbles for every risky roll, and the wyrm itself, coiled around the vault, breathing, with an eye that narrows as it gets suspicious. Under the scene sit buttons for whatever you can do right now, and at the bottom a compact terminal for the log and crew chat. You can click rooms on the map, press buttons, or type; anything you type that isn't a command goes to your crew.
+
 Nobody sees the whole picture, so you win by talking to each other:
 
-- **Runner (rogue)** is jacked in, sees only the room they're standing in, picks locks, loots programs and parleys with the wyrm.
-- **Operator (mage)** holds the stolen schematic: every room, the ports that open locked nodes, where the intel is and where the ICE lairs. In a fight they hurl bolts and analyze weak points.
-- **Sentry (cleric)** watches the trace and the hunting patrol, and heals: `spoof` scrubs trace. In a fight they raise shields.
+- **Runner (rogue)** walks the dungeon under fog of war: their map only shows rooms they've visited and the doors next to them. They pick locks, loot programs and parley with the wyrm.
+- **Operator (mage)** sees the whole stolen schematic on their map: every room, the port that opens each lock, where the intel is and where the ICE lairs. In a fight they hurl bolts and analyze weak points.
+- **Sentry (cleric)** is the only one who sees the hunting patrol, a red eye drifting across the map. They heal trace with `spoof` and raise shields in a fight.
 
 With two players one person plays mage and cleric; with four, two share the mage's schematic. Roles pass to someone else if a player drops.
 
@@ -60,12 +62,13 @@ src/server/game/bestiary.ts  ICE monsters and programs
 src/server/game/dice.ts      d20 checks with crits and fumbles
 src/server/game/ice.ts       the wyrm's brain: LLM, scripted fallback, intel verification
 src/server/game/narrator.ts  the dungeon master
-src/client/main.ts           xterm.js terminal, line editor, dice animation, HUD
+src/client/main.ts           terminal, line editor, action buttons, HUD, message queue
+src/client/scene.ts          the animated canvas scene: city, map, fights, wyrm, dice, effects
 test/                        world invariants, full delves, combat, breeds, programs
 scripts/balance.mts          simulates 400 delves with a bot crew to tune difficulty
 ```
 
-The server owns all state and sends finished text, so the browser is just a terminal plus a HUD. The `Session` interface in `hub.ts` is transport-agnostic, which leaves room for an SSH front door later.
+The server owns all state. Each player gets their own role-filtered scene (so the rogue's client never even receives the ports), a list of buttons for what they can do right now, and effect events (unlock, hit, heal, slay, alarm) that the client animates. All art is procedural canvas drawing, so there are no image assets. The `Session` interface in `hub.ts` is transport-agnostic, which leaves room for an SSH front door later.
 
 ```bash
 npm test           # node:test via tsx

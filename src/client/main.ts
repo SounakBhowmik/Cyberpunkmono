@@ -1,11 +1,12 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
-import { MAX_LINE_LENGTH, type ClientMessage, type HudState, type RollView, type ServerMessage } from '../shared/protocol';
+import { MAX_LINE_LENGTH, type ActionButton, type ClientMessage, type HudState, type RollView, type SceneRoom, type SceneState, type ServerMessage } from '../shared/protocol';
+import { SceneView } from './scene';
 
 const term = new Terminal({
   cursorBlink: true,
   fontFamily: '"JetBrains Mono", "Fira Code", Menlo, Consolas, monospace',
-  fontSize: window.innerWidth < 600 ? 12 : 15,
+  fontSize: window.innerWidth < 600 ? 11 : 13,
   theme: {
     background: '#07060d',
     foreground: '#d7e3ff',
@@ -30,7 +31,7 @@ term.loadAddon(fit);
 await Promise.race([document.fonts.load('15px "JetBrains Mono"'), new Promise((r) => setTimeout(r, 1500))]).catch(() => {});
 term.open(document.getElementById('terminal')!);
 fit.fit();
-window.addEventListener('resize', () => fit.fit());
+new ResizeObserver(() => fit.fit()).observe(document.getElementById('terminal')!);
 term.focus();
 
 // ---------------------------------------------------------------- line editor
@@ -140,25 +141,76 @@ term.onData((data) => {
   });
 });
 
-// ---------------------------------------------------------------- dice
+// ---------------------------------------------------------------- scene & actions
 
 let animating = false;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let lastScene: SceneState | undefined;
+let lastActions: ActionButton[] = [];
+
+const scene = new SceneView(document.getElementById('scene') as HTMLCanvasElement, (room, sc) => clickRoom(room, sc));
 
 async function animateRoll(roll: RollView) {
-  if (!reducedMotion) {
-    animating = true;
-    const frames = 9;
-    for (let i = 0; i < frames; i++) {
-      const face = i === frames - 1 ? roll.natural : 1 + Math.floor(Math.random() * roll.sides);
-      const tint = roll.sides === 20 && face === 20 ? '92' : roll.sides === 20 && face === 1 ? '91' : '93';
-      term.write(`\r\x1b[2K  \x1b[${tint}m⟦ d${roll.sides} · ${String(face).padStart(2, ' ')} ⟧\x1b[0m`);
-      await sleep(35 + i * 9);
-    }
-    animating = false;
-  }
+  animating = true;
+  await scene.rollDie(roll);
+  animating = false;
   print(roll.text);
+}
+
+/** Put a command in the editor for the player to finish (e.g. a port number). */
+function prefill(cmd: string) {
+  buffer = cmd;
+  cursor = buffer.length;
+  redraw();
+  term.focus();
+}
+
+/** Run a command as if typed, echoing it so the log reads naturally. */
+function run(cmd: string) {
+  term.write('\r\x1b[2K' + prompt + cmd + '\r\n');
+  buffer = '';
+  cursor = 0;
+  send({ type: 'line', text: cmd });
+  term.focus();
+}
+
+function clickRoom(room: SceneRoom, sc: SceneState) {
+  const me = sc.party.find((m) => m.you);
+  const here = sc.rooms.find((r) => r.id === sc.runnerAt);
+  if (!me?.classes.includes('rogue') || !here?.links.includes(room.id)) return;
+  if (!room.locked) run(`move ${room.id}`);
+  else prefill(room.kind === 'vault' ? 'crack vault ' : `crack ${room.id} `);
+}
+
+const actionsEl = document.getElementById('actions')!;
+
+function renderActions() {
+  actionsEl.replaceChildren();
+  if (lastScene) {
+    const map = document.createElement('button');
+    map.className = 'act tone-info toggle';
+    map.textContent = scene.mapForced ? '◫ back to scene' : '◫ map';
+    map.title = 'toggle the dungeon map';
+    map.onclick = () => {
+      scene.toggleMap();
+      renderActions();
+    };
+    if (lastScene.view !== 'explore') actionsEl.append(map);
+  }
+  for (const a of lastActions) {
+    const b = document.createElement('button');
+    b.className = `act tone-${a.tone ?? 'info'}`;
+    b.textContent = a.input ? `${a.label} …` : a.label;
+    b.disabled = !!a.disabled;
+    if (a.hint) b.title = a.hint;
+    b.onclick = () => (a.input ? prefill(a.cmd) : run(a.cmd));
+    actionsEl.append(b);
+  }
+  if (!actionsEl.children.length) {
+    const hint = document.createElement('span');
+    hint.className = 'act-hint';
+    hint.textContent = lastScene ? 'watch the map and talk to your crew. type to chat.' : 'type below to play';
+    actionsEl.append(hint);
+  }
 }
 
 // ---------------------------------------------------------------- hud
@@ -224,7 +276,24 @@ async function drain() {
     const msg = queue.shift()!;
     if (msg.type === 'out') print(msg.text);
     else if (msg.type === 'roll') await animateRoll(msg.roll);
-    else if (msg.type === 'hud') renderHud(msg.hud);
+    else if (msg.type === 'hud') {
+      renderHud(msg.hud);
+      if (msg.hud.mode !== 'delve') {
+        lastScene = undefined;
+        lastActions = [];
+        scene.setLobby(
+          msg.hud.mode === 'street'
+            ? { title: 'NEO-AVALON', subtitle: 'type create, or join <code>' }
+            : { title: `SAFEHOUSE ${msg.hud.code}`, subtitle: `${msg.hud.party.length}/4 netrunners · share the code · host types start` },
+        );
+        renderActions();
+      }
+    } else if (msg.type === 'scene') {
+      lastScene = msg.scene;
+      lastActions = msg.actions;
+      scene.setScene(msg.scene);
+      renderActions();
+    } else if (msg.type === 'fx') scene.playFx(msg.fx);
     else if (msg.type === 'prompt') {
       prompt = msg.text;
       redraw();

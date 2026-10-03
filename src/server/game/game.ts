@@ -1,4 +1,4 @@
-import type { HudMember, HudState, RollView } from '../../shared/protocol.js';
+import type { ActionButton, Fx, HudMember, HudState, RollView, SceneRoom, SceneState } from '../../shared/protocol.js';
 import { c } from '../ansi.js';
 import { MONSTERS, PROGRAMS, PROGRAM_IDS, programByName, type MonsterSpec, type ProgramId } from './bestiary.js';
 import { BREEDS, BREED_IDS } from './breeds.js';
@@ -7,7 +7,7 @@ import { Dice, describeCheck, passed, type CheckResult } from './dice.js';
 import { INJECTION, intelMentioned, type IntelKey, type WardenBrain, type WardenTurn } from './ice.js';
 import { ScriptedNarrator, type NarrationEvent, type Narrator } from './narrator.js';
 import { Rng } from './rng.js';
-import { GATEWAY, VAULT, generateWorld, type IntelKind, type NetNode, type World } from './world.js';
+import { GATEWAY, VAULT, bfsDepths, generateWorld, type IntelKind, type NetNode, type World } from './world.js';
 
 export type Role = 'RUNNER' | 'OPERATOR' | 'SENTRY';
 
@@ -18,6 +18,8 @@ export interface GamePlayer {
   setPrompt(text: string): void;
   showRoll(roll: RollView): void;
   setHud(hud: HudState): void;
+  setScene(scene: SceneState, actions: ActionButton[]): void;
+  fx(fx: Fx): void;
 }
 
 export interface GameResult {
@@ -116,6 +118,9 @@ export class Game {
   private warnedAt = 0;
   private ghostMoves = 0;
   private lastRoll?: string;
+  private readonly layout = new Map<string, { x: number; y: number }>();
+  private lastSaid?: string;
+  private lastReply?: string;
   private ticker?: NodeJS.Timeout;
 
   private wardenHistory: WardenTurn[] = [];
@@ -144,6 +149,9 @@ export class Game {
     for (const p of players) this.brief(p);
     this.refresh();
     const w = this.world;
+    this.computeLayout();
+    this.refresh();
+    this.emit({ kind: 'intro', corp: w.corp, district: w.district.split(',')[0]!, wyrm: w.wardenName, title: w.breed.title, color: w.breed.id });
     this.narrate({ kind: 'start', corp: w.corp, district: w.district.split(',')[0]!, wyrmName: w.wardenName, breedTitle: w.breed.title });
 
     const tickMs = opts.tickMs ?? 20_000;
@@ -218,15 +226,126 @@ export class Game {
     const r = this.dice.check(bonus, dc);
     const text = describeCheck(who, label, r);
     this.lastRoll = stripAnsi(text);
-    for (const p of this.players.values()) p.showRoll({ sides: 20, natural: r.natural, text });
+    const roll: RollView = { sides: 20, natural: r.natural, text, outcome: r.outcome, caption: `${who} · ${label} · DC ${r.dc}` };
+    for (const p of this.players.values()) p.showRoll(roll);
     return r;
+  }
+
+  private emit(fx: Fx) {
+    for (const p of this.players.values()) p.fx(fx);
   }
 
   private refresh() {
     for (const p of this.players.values()) {
       p.setPrompt(this.promptFor(p.id));
       p.setHud(this.hudFor(p.id));
+      p.setScene(this.sceneFor(p.id), this.actionsFor(p.id));
     }
+  }
+
+  // ---------------------------------------------------------------- scene
+
+  /** Columns by distance from the gateway, rows spread around the middle. */
+  private computeLayout() {
+    const depth = bfsDepths(this.world.nodes, GATEWAY);
+    const order = [GATEWAY, ...this.world.middle, VAULT];
+    const columns = new Map<number, string[]>();
+    for (const id of order) {
+      const d = depth.get(id) ?? 0;
+      columns.set(d, [...(columns.get(d) ?? []), id]);
+    }
+    for (const [d, ids] of columns) ids.forEach((id, i) => this.layout.set(id, { x: d, y: i - (ids.length - 1) / 2 }));
+  }
+
+  private sceneView(): SceneState['view'] {
+    if (this.encounter) return 'combat';
+    if (this.runnerAt === VAULT) return 'vault';
+    if (this.runnerAt === this.world.gateId && !this.isOpen(VAULT)) return 'parley';
+    return 'explore';
+  }
+
+  private sceneFor(id: string): SceneState {
+    const w = this.world;
+    const isOp = this.has(id, 'OPERATOR');
+    const isSentry = this.has(id, 'SENTRY');
+    const near = new Set<string>();
+    for (const v of this.visited) for (const l of this.node(v).links) near.add(l);
+
+    const rooms: SceneRoom[] = [...w.nodes.values()].map((n) => {
+      const visited = this.visited.has(n.id);
+      const known: SceneRoom['known'] = isOp ? 'full' : visited ? 'visited' : near.has(n.id) || isSentry ? 'seen' : 'hidden';
+      const pos = this.layout.get(n.id) ?? { x: 0, y: 0 };
+      const kind: SceneRoom['kind'] = n.id === GATEWAY ? 'gateway' : n.id === VAULT ? 'vault' : n.id === w.gateId ? 'gate' : 'room';
+      const room: SceneRoom = { id: n.id, label: known === 'hidden' ? '' : n.label, x: pos.x, y: pos.y, links: n.links, kind, known, locked: !this.isOpen(n.id) };
+      if (isOp || visited) {
+        if (n.files.some((f) => f.intel)) room.intel = true;
+        if (n.files.some((f) => f.program)) room.program = true;
+        const lair = this.lairs.get(n.id);
+        if (lair) room.lair = lair.spec.id;
+      }
+      if (isOp && room.locked && n.id !== VAULT) room.port = n.port;
+      return room;
+    });
+
+    const party: HudMember[] = [...this.players.values()].map((p) => ({
+      handle: p.handle,
+      classes: [...(this.roles.get(p.id) ?? [])].map((r) => CLASS_OF[r]),
+      you: p.id === id,
+      ...(this.encounter ? { ready: this.encounter.actions.has(p.id) } : {}),
+    }));
+    const enc = this.encounter;
+    return {
+      view: this.sceneView(),
+      rooms,
+      runnerAt: this.runnerAt,
+      ...(isSentry ? { patrolAt: this.patrolAt } : {}),
+      ...(this.ghostMoves > 0 ? { ghosted: true } : {}),
+      party,
+      wyrm: { name: w.wardenName, title: w.breed.title, color: w.breed.id },
+      ...(enc ? { combat: { monster: enc.monster.id, name: enc.monster.name, hp: enc.hp, maxHp: enc.monster.hp, round: enc.round } } : {}),
+      parley: { suspicion: this.wardenSuspicion, sealed: this.wardenLocked, ...(this.lastSaid ? { said: this.lastSaid } : {}), ...(this.lastReply ? { reply: this.lastReply } : {}) },
+    };
+  }
+
+  /** The buttons a player sees right now. Typing still works for everything. */
+  private actionsFor(id: string): ActionButton[] {
+    const out: ActionButton[] = [];
+    if (this.ended) return out;
+    const enc = this.encounter;
+    const castable = (pid: ProgramId) => (this.deck.get(pid) ?? 0) > 0;
+
+    if (enc) {
+      const done = enc.actions.has(id);
+      if (this.has(id, 'RUNNER')) out.push({ label: 'strike', cmd: 'strike', tone: 'fight', hint: 'd20+4, 1d8+2 damage' }, { label: 'flee', cmd: 'flee', tone: 'go', hint: 'escape to the last room' });
+      if (this.has(id, 'OPERATOR')) out.push({ label: 'bolt', cmd: 'bolt', tone: 'fight', hint: 'd20+3, 1d6+1 damage' }, { label: 'analyze', cmd: 'analyze', tone: 'info', hint: '+3 to hit for everyone' });
+      if (this.has(id, 'SENTRY')) out.push({ label: 'shield', cmd: 'shield', tone: 'magic', hint: 'halve the next hit' });
+      for (const pid of ['nova', 'mend', 'ghost'] as const) if (castable(pid)) out.push({ label: `cast ${pid}`, cmd: `cast ${pid}`, tone: 'magic', hint: PROGRAMS[pid].blurb });
+      out.push({ label: 'wait', cmd: 'wait', tone: 'info' });
+      return done ? out.map((b) => ({ ...b, disabled: true })) : out;
+    }
+
+    if (this.has(id, 'RUNNER')) {
+      const here = this.node();
+      for (const l of here.links) {
+        if (this.isOpen(l)) out.push({ label: `go ${l}`, cmd: `move ${l}`, tone: 'go' });
+        else if (l === VAULT) out.push({ label: 'crack vault', cmd: 'crack vault ', input: true, tone: 'risk', hint: 'type the 6-digit code' });
+        else out.push({ label: `crack ${l}`, cmd: `crack ${l} `, input: true, tone: 'risk', hint: 'type the port your mage reads out' });
+      }
+      if (this.runnerAt === this.world.gateId && !this.isOpen(VAULT) && !this.wardenLocked) {
+        out.push({ label: `talk to ${this.world.wardenName}`, cmd: 'talk ', input: true, tone: 'talk', hint: 'say anything. use what you found.' });
+      }
+      for (const f of here.files) {
+        out.push(f.program ? { label: `take ${f.name}`, cmd: `take ${f.name}`, tone: 'magic' } : { label: `read ${f.name}`, cmd: `cat ${f.name}`, tone: 'info' });
+      }
+      if (this.runnerAt === VAULT) out.unshift({ label: 'DOWNLOAD payload.dat', cmd: 'download', tone: 'go' });
+    }
+    if (this.has(id, 'SENTRY')) {
+      const ready = this.spoofReady();
+      out.push({ label: ready ? 'spoof · heal trace' : `spoof · ${this.spoofReadyAt - this.actions} moves`, cmd: 'spoof', tone: 'magic', disabled: !ready });
+    }
+    for (const pid of ['ghost', 'babel', 'mend'] as const) if (castable(pid)) out.push({ label: `cast ${pid}`, cmd: `cast ${pid}`, tone: 'magic', hint: PROGRAMS[pid].blurb });
+    if (castable('icepick')) out.push({ label: 'cast icepick', cmd: 'cast icepick ', input: true, tone: 'magic', hint: 'type a locked room next to the runner' });
+    return out;
   }
 
   private promptFor(id: string): string {
@@ -265,25 +384,22 @@ export class Game {
     const w = this.world;
     const lines = [
       '',
-      c.bold(`THE DELVE // Neo-Avalon · ${w.district}`),
-      `${c.magenta(w.corp)}'s tower. coiled around the vault at its root: ${c.red(w.wardenName)}, a ${c.red(w.breed.title)} ${c.dim(`(${w.breed.temperament})`)}.`,
-      `pull ${c.green('payload.dat')} from its hoard. if trace hits 100%, the tower burns your decks.`,
-      `party // ${[...this.players.values()].map((q) => `${q.handle}: ${this.roleTag(q.id)}`).join(', ')}`,
-      '',
+      c.bold(`THE DELVE // ${w.corp} · ${w.district.split(',')[0]}`),
+      `steal ${c.green('payload.dat')} from ${c.red(w.wardenName)}'s hoard. trace 100% = flatlined.`,
+      ...[...(this.roles.get(p.id) ?? [])].map((r) => this.roleBrief(r)),
+      c.dim('use the buttons, click rooms on the map, or type. anything else you type is crew chat.'),
     ];
-    for (const role of this.roles.get(p.id) ?? []) lines.push(this.roleBrief(role), this.roleCommands(role), '');
-    lines.push(c.dim(`everyone: say <msg> (or start with ')  ·  deck  ·  cast <program>  ·  bestiary  ·  help`));
     p.send(lines.join('\n'));
   }
 
   private roleBrief(role: Role): string {
     switch (role) {
       case 'RUNNER':
-        return `${ROLE_COLOR.RUNNER('RUNNER · rogue')}: you're jacked in at the gateway and see only the room you stand in. you pick the locks, loot the programs and talk to the wyrm. +${RULES.rogueBonus} to cracking, sneaking and striking.`;
+        return `${ROLE_COLOR.RUNNER('you are the ROGUE')}: you walk the dungeon, but you can only see where you've been. ask your crew.`;
       case 'OPERATOR':
-        return `${ROLE_COLOR.OPERATOR('OPERATOR · mage')}: you hold the stolen schematics: every room, the true names (ports) that open locked nodes, where the intel is, and where the ICE lairs. in a fight you hurl bolts and read weak points.`;
+        return `${ROLE_COLOR.OPERATOR('you are the MAGE')}: your map shows every lock's port, the intel and the monster lairs. guide the rogue.`;
       case 'SENTRY':
-        return `${ROLE_COLOR.SENTRY('SENTRY · cleric')}: you watch the trace and the hunting patrol, and you heal: spoof scrubs trace. in a fight you raise shields. warn the runner before they walk into trouble.`;
+        return `${ROLE_COLOR.SENTRY('you are the CLERIC')}: you alone see the hunting patrol (the red eye). warn the rogue, and heal trace.`;
     }
   }
 
@@ -358,7 +474,7 @@ export class Game {
       case 'trace': return p.send(`trace: ${traceColor(this.trace)(`${this.trace}%`)}`);
       default:
         if (cmd in COMBAT_VERBS) return p.send(c.dim('nothing to fight here.'));
-        return p.send(c.dim(`unknown command '${head}'. type help. (to talk to your crew: say <message>)`));
+        return this.say(p, line);
     }
   }
 
@@ -391,16 +507,9 @@ export class Game {
     const files = n.files.map((f) => (f.program ? c.magenta(f.name) : f.name));
     p.send(
       [
-        `${c.green('ROOM')} ${c.bold(n.id)} ${c.dim(`// ${n.label}`)}`,
-        `files: ${files.join('  ') || c.dim('(none)')}`,
-        `links: ${links.join('  ')}`,
-        n.files.some((f) => f.program) ? c.dim(`(magenta files are programs: take <name>)`) : '',
-        this.runnerAt === this.world.gateId && !this.isOpen(VAULT)
-          ? c.red(`${this.world.wardenName} is coiled around the vault link, watching you. (talk <message>)`)
-          : '',
-      ]
-        .filter(Boolean)
-        .join('\n'),
+        `${c.green('▸')} ${c.bold(n.id)} ${c.dim(`· ${n.label}`)}${files.length ? ` ${c.dim('· files:')} ${files.join(' ')}` : ''}`,
+        `  ${c.dim('links:')} ${links.join('  ')}`,
+      ].join('\n'),
     );
   }
 
@@ -426,6 +535,7 @@ export class Game {
   private addToDeck(id: ProgramId, how: string) {
     const spec = PROGRAMS[id];
     this.deck.set(id, (this.deck.get(id) ?? 0) + spec.charges);
+    this.emit({ kind: 'loot', name: spec.file });
     this.broadcast(c.magenta(`✦ ${how} ${spec.file} (${spec.charges} charge${spec.charges > 1 ? 's' : ''}): ${spec.blurb}`));
     this.refresh();
   }
@@ -446,7 +556,7 @@ export class Game {
     this.runnerAt = to;
     const firstVisit = !this.visited.has(to);
     this.visited.add(to);
-    this.broadcast(c.dim(`>> runner moved to ${to}`));
+    this.emit({ kind: 'move', from: this.prevAt, to });
     this.look(p);
     // The monster's intro narrates lairs, so the DM only sets the scene for quiet rooms.
     if (firstVisit && to !== VAULT && !this.lairs.has(to)) this.narrate({ kind: 'enter', node: to, label: this.node(to).label, corp: this.world.corp });
@@ -462,6 +572,8 @@ export class Game {
         this.addTrace(RULES.moveCost, `hop to ${to}`);
       } else {
         this.broadcast(c.red(`!! ${p.handle} walked straight into the ICE patrol on ${to}`));
+        this.emit({ kind: 'alarm' });
+        this.emit({ kind: 'hurt', amount: RULES.patrolHitCost });
         this.addTrace(RULES.patrolHitCost, `patrol contact on ${to}`);
       }
     } else {
@@ -489,21 +601,25 @@ export class Game {
     if (target === VAULT) {
       if (guess === this.world.passcode) {
         this.unlocked.add(VAULT);
+        this.emit({ kind: 'unlock', node: VAULT });
         this.broadcast(c.green(`>> the vault's seals turn over one by one. the hoard is open. move vault.`));
         this.addTrace(RULES.crackCostPerSecurity * n.security, 'vault code accepted');
       } else {
         this.broadcast(c.red(`!! wrong vault code. ${this.world.wardenName} stirs.`));
+        this.emit({ kind: 'alarm' });
         this.addTrace(RULES.crackWrongPortCost, 'wrong vault code');
       }
       return this.tick();
     }
     if (guess !== String(n.port)) {
       this.broadcast(c.red(`!! ${guess} is not ${target}'s true name. the ICE noticed.`));
+      this.emit({ kind: 'alarm' });
       this.addTrace(RULES.crackWrongPortCost, `wrong port on ${target}`);
       return this.tick();
     }
 
     const r = this.check(p.handle, `picks the lock on ${target}`, RULES.rogueBonus, 8 + 2 * n.security);
+    if (passed(r.outcome)) this.emit({ kind: 'unlock', node: target });
     if (r.outcome === 'crit') {
       this.unlocked.add(target);
       this.broadcast(c.green(`>> ${target} opens without a sound. not a single log line.`));
@@ -516,6 +632,7 @@ export class Game {
       this.addTrace(RULES.crackSlipCost, `lock resisted on ${target}`);
     } else {
       this.broadcast(c.red(`!! the pick snaps inside ${target}'s lock. alarms. the patrol is coming.`));
+      this.emit({ kind: 'alarm' });
       if (target !== VAULT && this.world.middle.includes(target)) this.patrolAt = target;
       this.toRole('SENTRY', c.yellow(`   ICE patrol rushed to ${this.patrolAt}`));
       this.addTrace(RULES.crackFumbleCost, `fumbled crack on ${target}`);
@@ -531,7 +648,9 @@ export class Game {
     if (this.wardenBusy) return p.send(c.dim(`${w.wardenName} is still composing its contempt. wait.`));
 
     this.wardenBusy = true;
+    this.lastSaid = message;
     this.broadcast(`${c.green(`${p.handle} → ${w.wardenName}:`)} ${message}`);
+    this.refresh();
     intelMentioned(message, w.intel).forEach((k) => this.mentioned.add(k));
 
     let verdict;
@@ -558,6 +677,7 @@ export class Game {
     this.wardenPeak = Math.max(this.wardenPeak, suspicion);
     this.wardenSuspicion = suspicion;
 
+    this.lastReply = verdict.reply;
     this.wardenHistory.push({ from: 'runner', text: message }, { from: 'warden', text: verdict.reply });
     this.wardenHistory = this.wardenHistory.slice(-RULES.historyLimit);
     this.broadcast(c.red(verdict.reply));
@@ -572,6 +692,7 @@ export class Game {
     const verified = this.mentioned.size >= RULES.grantIntelNeeded && !needsTicket && suspicion < RULES.grantMaxSuspicion;
     if (verdict.grant && verified) {
       this.unlocked.add(VAULT);
+      this.emit({ kind: 'unlock', node: VAULT });
       this.broadcast(c.green(`>> ${w.wardenName} uncoils from the vault link. move vault.`));
       this.log(`wyrm granted passage (suspicion ${suspicion}%)`);
     } else if (verdict.grant) {
@@ -582,6 +703,7 @@ export class Game {
     if (suspicion >= 100) {
       this.wardenLocked = true;
       this.broadcast(c.red(`!! ${w.wardenName} roars and seals itself off. it has your scent now.`));
+      this.emit({ kind: 'alarm' });
       this.addTrace(RULES.lockoutCost, 'wyrm lockout');
     } else {
       this.addTrace(RULES.talkCost + (suspicion > 70 ? 5 : 0), 'parley with the wyrm');
@@ -640,7 +762,8 @@ export class Game {
     const amount = natural + RULES.spoofBase;
     const text = `${c.yellow('⚂')} ${c.bold(p.handle)} channels a ghost signal: d8 ${c.bold(natural)} + ${RULES.spoofBase} = ${c.green(`${amount}% trace scrubbed`)}`;
     this.lastRoll = stripAnsi(text);
-    for (const q of this.players.values()) q.showRoll({ sides: 8, natural, text });
+    for (const q of this.players.values()) q.showRoll({ sides: 8, natural, text, outcome: 'success', caption: `${p.handle} · ghost signal · heal` });
+    this.emit({ kind: 'heal', amount });
     this.addTrace(-amount, 'spoofed');
   }
 
@@ -680,11 +803,13 @@ export class Game {
         if (t === VAULT) return p.send(c.dim(`the vault's locks are older than icepick. it would shatter.`));
         if (this.isOpen(t)) return p.send(c.dim(`${t} is already open.`));
         this.unlocked.add(t);
+        this.emit({ kind: 'unlock', node: t });
         this.broadcast(c.magenta(`✦ ${p.handle} runs icepick.exe. ${t}'s ICE wall shatters like glass.`));
         break;
       }
       case 'mend':
         this.broadcast(c.magenta(`✦ ${p.handle} runs mend.sys and rewrites the access logs.`));
+        this.emit({ kind: 'heal', amount: RULES.mendAmount });
         this.addTrace(-RULES.mendAmount, 'mend.sys');
         break;
       case 'nova':
@@ -721,6 +846,7 @@ export class Game {
         this.deck.set(id, (this.deck.get(id) ?? 1) - 1);
       },
       refresh: () => this.refresh(),
+      fx: (fx) => this.emit(fx),
       finish: (result) => this.finishEncounter(result),
     };
   }
@@ -731,6 +857,7 @@ export class Game {
     this.encounter = undefined;
     if (result === 'slain') {
       this.lairs.delete(enc.nodeId);
+      this.emit({ kind: 'slay' });
       this.broadcast(c.green(c.bold(`✔ the ${enc.monster.name} is destroyed.`)));
       this.narrate({ kind: 'slay', monster: enc.monster.name, node: enc.nodeId });
       this.addToDeck(this.rng.pick(PROGRAM_IDS), 'it dropped');
@@ -815,6 +942,7 @@ export class Game {
         '',
       ].join('\n'),
     );
+    this.emit({ kind: 'end', win });
     this.narrate({ kind: 'end', win, corp: w.corp, wyrmName: w.wardenName });
     this.opts.onEnd({ win, reason, trace: this.trace, seconds });
   }

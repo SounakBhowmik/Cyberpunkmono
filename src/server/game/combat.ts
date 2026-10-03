@@ -1,6 +1,7 @@
 import { c } from '../ansi.js';
 import { PROGRAMS, type MonsterSpec, type ProgramId } from './bestiary.js';
 import { passed, type CheckResult, type Dice } from './dice.js';
+import type { Fx } from '../../shared/protocol.js';
 import type { GamePlayer, Role } from './game.js';
 
 export type CombatAction =
@@ -37,6 +38,7 @@ export interface CombatHost {
   hasProgram(id: ProgramId): boolean;
   spendProgram(id: ProgramId): void;
   refresh(): void;
+  fx(fx: Fx): void;
   finish(result: 'slain' | 'fled'): void;
 }
 
@@ -65,14 +67,14 @@ export class Encounter {
         '',
         c.red(c.bold(`⚔ ENCOUNTER // ${m.name.toUpperCase()}`)),
         c.italic(m.intro),
-        c.dim(`HP ${this.hp}/${m.hp} · AC ${m.ac} · every round each of you picks one action. it hits back with trace.`),
+        c.dim(`HP ${this.hp}/${m.hp} · AC ${m.ac} · it hits back with trace`),
       ].join('\n'),
     );
     this.announceRound();
   }
 
   private announceRound() {
-    for (const p of this.host.players()) p.send(`${c.red(`ROUND ${this.round}`)}  ${this.menuFor(p)}`);
+    this.host.broadcast(`${c.red(`ROUND ${this.round}`)} ${c.dim('· everyone pick an action')}`);
     this.host.refresh();
     if (this.roundMs > 0) {
       clearTimeout(this.timer);
@@ -124,6 +126,7 @@ export class Encounter {
   private damage(who: string, count: number, sides: number, plus: number, crit: boolean): boolean {
     const dmg = this.host.dice.sum(crit ? count * 2 : count, sides, plus);
     this.hp = Math.max(0, this.hp - dmg);
+    this.host.fx({ kind: 'strike', amount: dmg, by: who });
     this.host.broadcast(`   ${c.green(`→ ${who} deals ${dmg} damage.`)} ${this.monster.name}: ${this.hp}/${this.monster.hp} HP`);
     if (this.hp > 0) return false;
     this.over = true;
@@ -173,6 +176,7 @@ export class Encounter {
             if (this.damage(who, 3, 6, 0, false)) return;
           } else if (action.program === 'mend') {
             this.host.broadcast(c.magenta(`   ${who} runs mend.sys and rewrites the access logs.`));
+            this.host.fx({ kind: 'heal', amount: 12 });
             this.host.addTrace(-12, 'mend.sys');
           } else if (action.program === 'ghost') {
             this.host.broadcast(c.magenta(`   ${who} runs ghost.exe. the runner flickers out of sight.`));
@@ -202,6 +206,7 @@ export class Encounter {
       let dmg = this.host.dice.sum(r.outcome === 'crit' ? m.damage[0] * 2 : m.damage[0], m.damage[1], m.damage[2]);
       if (shielded) dmg = Math.ceil(dmg / 2);
       this.host.broadcast(c.red(`   ← the ${m.name} tears into your signal: +${dmg}% trace.`));
+      this.host.fx({ kind: 'hurt', amount: dmg });
       this.host.addTrace(dmg, `${m.name} hit`);
     } else {
       this.host.broadcast(c.dim(`   the ${m.name} misses.`));
