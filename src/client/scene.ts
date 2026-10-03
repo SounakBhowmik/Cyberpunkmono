@@ -1,4 +1,5 @@
-import type { Fx, RollView, SceneRoom, SceneState, WyrmColor } from '../shared/protocol';
+import type { Fx, HudMember, RollView, SceneRoom, SceneState, WyrmColor } from '../shared/protocol';
+import { AV_H, AV_W, avatarSeed, buildAvatar, drawAvatar } from './avatar';
 
 // The scene window: a neon-vector arcade view of the delve. Everything is
 // drawn procedurally on one canvas, so there are no image assets to load.
@@ -38,7 +39,11 @@ type Overlay =
 export interface Lobby {
   title: string;
   subtitle: string;
+  /** Avatars to line up under the title: the crew in a safehouse, or just you on the street. */
+  crew?: { handle: string; avatar: number; host?: boolean; you?: boolean }[];
 }
+
+interface ChatPop { handle: string; avatar: number; classes: string[]; text: string; t0: number }
 
 export class SceneView {
   private readonly ctx: CanvasRenderingContext2D;
@@ -51,6 +56,8 @@ export class SceneView {
   private runnerPos?: { x: number; y: number };
   private particles: Particle[] = [];
   private floaters: Floater[] = [];
+  private chats: ChatPop[] = [];
+  private partyHitAt = -10;
   private shakeUntil = 0;
   private flash = { color: COLORS.red, until: 0, dur: 1 };
   private monsterHitAt = -10;
@@ -104,6 +111,12 @@ export class SceneView {
     }
   }
 
+  /** A crewmate's avatar pops up in the corner with what they said. */
+  chat(member: Pick<HudMember, 'handle' | 'avatar' | 'classes'>, text: string) {
+    this.chats.push({ handle: member.handle, avatar: member.avatar, classes: member.classes, text, t0: this.now });
+    if (this.chats.length > 2) this.chats.shift();
+  }
+
   toggleMap(): boolean {
     this.forceMap = !this.forceMap;
     return this.forceMap;
@@ -132,6 +145,7 @@ export class SceneView {
         this.float('ALARM', cx, cy * 0.45, COLORS.red, true);
         break;
       case 'hurt':
+        this.partyHitAt = this.now;
         this.shake(0.35);
         this.flashScreen(COLORS.red, 0.35);
         this.float(`+${fx.amount}% trace`, this.w * 0.25, this.h * 0.4, COLORS.red);
@@ -253,6 +267,7 @@ export class SceneView {
     }
     this.drawParticles(dt);
     this.drawFloaters();
+    this.drawChats();
     if (this.die) this.drawDie();
     if (this.overlay) this.drawOverlay();
     ctx.restore();
@@ -434,11 +449,30 @@ export class SceneView {
   private drawLobby() {
     this.drawCity(0.9);
     const size = Math.min(54, this.w / 11);
+    const crew = this.lobby.crew ?? [];
+    const titleY = crew.length ? this.h * 0.18 : this.h * 0.3;
     this.glow(COLORS.cyan, 18);
-    this.text(this.lobby.title, this.w / 2, this.h * 0.3, size, COLORS.cyan, 'center', 700);
+    this.text(this.lobby.title, this.w / 2, titleY, size, COLORS.cyan, 'center', 700);
     this.noGlow();
+    if (crew.length) {
+      const slot = Math.min(150, (this.w - 40) / Math.max(crew.length, 2));
+      const px = Math.max(3, Math.min(this.narrow ? 5 : 7, slot / (AV_W * 1.6), (this.h * 0.32) / AV_H));
+      const cy = this.h * (this.narrow ? 0.52 : 0.58);
+      crew.forEach((m, i) => {
+        const x = this.w / 2 + (i - (crew.length - 1) / 2) * slot;
+        const bob = Math.sin(this.now * 2.5 + i * 1.3) * px * 0.6;
+        // a little plinth of light
+        this.ctx.fillStyle = 'rgba(0, 240, 255, 0.10)';
+        this.ctx.beginPath();
+        this.ctx.ellipse(x, cy + (AV_H * px) / 2 + px * 1.5, AV_W * px * 0.5, px * 1.2, 0, 0, Math.PI * 2);
+        this.ctx.fill();
+        drawAvatar(this.ctx, buildAvatar(avatarSeed(m.handle, m.avatar)), x, cy + bob, px, { t: this.now, glow: true });
+        const label = `${m.host ? '★ ' : ''}${m.handle}`;
+        this.text(label, x, cy + (AV_H * px) / 2 + px * 4 + 6, 12, m.you ? COLORS.cyan : COLORS.text, 'center', m.you ? 700 : 400);
+      });
+    }
     const sub = Math.max(12, size * 0.28);
-    this.wrap(this.lobby.subtitle, this.w - 40, sub).forEach((l, i) => this.text(l, this.w / 2, this.h * 0.3 + size * 0.9 + i * (sub + 6), sub, COLORS.text));
+    this.wrap(this.lobby.subtitle, this.w - 40, sub).forEach((l, i) => this.text(l, this.w / 2, titleY + size * 0.9 + i * (sub + 6), sub, COLORS.text));
   }
 
   // ---------------------------------------------------------------- map
@@ -565,7 +599,13 @@ export class SceneView {
       this.runnerPos.y += (target.y - this.runnerPos.y) * 0.12;
       const bob = Math.sin(this.now * 4) * 3;
       ctx.globalAlpha = s.ghosted ? 0.35 + 0.2 * Math.sin(this.now * 8) : 1;
-      if (vertical) this.drawHero('rogue', this.runnerPos.x - bw / 2 - 2 + bob * 0.5, this.runnerPos.y - bh / 2, 8);
+      const rogue = s.party.find((m) => m.classes.includes('rogue'));
+      const av = rogue ? buildAvatar(avatarSeed(rogue.handle, rogue.avatar), rogue.classes) : undefined;
+      if (av) {
+        const px = vertical ? 1.6 : 2.2;
+        if (vertical) drawAvatar(ctx, av, this.runnerPos.x - bw / 2 - 2 + bob * 0.5, this.runnerPos.y - bh / 2, px, { t: this.now, glow: true });
+        else drawAvatar(ctx, av, this.runnerPos.x, this.runnerPos.y - bh / 2 - AV_H * px * 0.5 - 2 + bob, px, { t: this.now, glow: true });
+      } else if (vertical) this.drawHero('rogue', this.runnerPos.x - bw / 2 - 2 + bob * 0.5, this.runnerPos.y - bh / 2, 8);
       else this.drawHero('rogue', this.runnerPos.x, this.runnerPos.y - bh / 2 - 16 + bob, 11);
       ctx.globalAlpha = 1;
     }
@@ -656,18 +696,33 @@ export class SceneView {
     ctx.globalAlpha = 1;
   }
 
+  /** Pixel size for the crew in a fight: big enough to read, small enough for four to fit. */
+  private partyPx() {
+    const n = Math.max(1, this.scene?.party.length ?? 1);
+    const rows = Math.ceil(n / (n > 2 ? 2 : 1));
+    return Math.max(2.5, Math.min(this.narrow ? 3.5 : 6.5, this.h / 70, (this.h * 0.62) / (rows * AV_H * 1.35)));
+  }
+
   private drawCombat(s: SceneState) {
     const c = s.combat;
     this.drawSynthFloor(COLORS.magenta);
     // party on the left
     const n = s.party.length;
     s.party.forEach((m, i) => {
-      const x = this.w * 0.14;
-      const y = this.h * (n === 1 ? 0.5 : 0.28 + (i / (n - 1)) * 0.44);
+      // one column for small crews, a two-column formation for three or four
+      const cols = n > 2 ? 2 : 1;
+      const rows = Math.ceil(n / cols);
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const x = this.w * (cols === 1 ? 0.14 : 0.1 + col * (this.narrow ? 0.17 : 0.12));
+      const y = this.h * (rows === 1 ? 0.5 : 0.3 + (row / (rows - 1)) * 0.4) + (col ? this.h * 0.06 : 0);
       const bob = Math.sin(this.now * 3 + i) * 3;
-      this.drawHero(m.classes[0] ?? 'rogue', x, y + bob, 18, m.ready);
-      const label = this.narrow ? m.handle.slice(0, 9) : `${m.handle}${m.classes.length ? ` · ${m.classes.join('+')}` : ''}`;
-      this.text(label, x, y + 36, 11, m.you ? COLORS.cyan : COLORS.muted);
+      const px = this.partyPx();
+      const flash = this.now - this.partyHitAt < 0.15;
+      drawAvatar(this.ctx, buildAvatar(avatarSeed(m.handle, m.avatar), m.classes), x, y + bob, px, { t: this.now, glow: true, flash });
+      if (m.ready) this.text('✓', x + AV_W * px * 0.5 + 10, y - AV_H * px * 0.4, 16, COLORS.green, 'center', 700);
+      const label = this.narrow || n > 2 ? m.handle.slice(0, 10) : `${m.handle}${m.classes.length ? ` · ${m.classes.join('+')}` : ''}`;
+      this.text(label, x, y + AV_H * px * 0.5 + 12, 11, m.you ? COLORS.cyan : COLORS.muted);
     });
     if (!c) return;
     // the monster
@@ -807,14 +862,24 @@ export class SceneView {
     ctx.fillRect(mx, my, mw * sus, 6);
 
     // speech bubbles: beside the wyrm on wide screens, above and below it on phones
+    const rogue = s.party.find((m) => m.classes.includes('rogue'));
+    const speaker = rogue ? buildAvatar(avatarSeed(rogue.handle, rogue.avatar), rogue.classes) : undefined;
+    const apx = this.narrow ? 2.4 : 3.2;
+    const indent = speaker ? AV_W * apx + 10 : 0;
     if (this.narrow) {
       const bw = this.w - 24;
       if (p.reply) this.bubble(p.reply, 12, 10, bw, color, 'right', 3);
-      if (p.said) this.bubble(`you: ${p.said}`, 12, -10, bw, COLORS.green, 'left', 2);
+      if (p.said) {
+        const box = this.bubble(p.said, 12 + indent, -10, bw - indent, COLORS.green, 'left', 2);
+        if (speaker) drawAvatar(ctx, speaker, 12 + (AV_W * apx) / 2, box.y + box.h / 2, apx, { t: this.now, glow: true });
+      }
     } else {
       const bubbleW = Math.min(360, this.w * 0.42);
       if (p.reply) this.bubble(p.reply, 16, 16, bubbleW, color, 'right');
-      if (p.said) this.bubble(`you: ${p.said}`, 16, this.h * 0.62, bubbleW, COLORS.green, 'left');
+      if (p.said) {
+        const box = this.bubble(p.said, 16 + indent, this.h * 0.62, bubbleW, COLORS.green, 'left');
+        if (speaker) drawAvatar(ctx, speaker, 16 + (AV_W * apx) / 2, box.y + box.h / 2, apx, { t: this.now, glow: true });
+      }
     }
     if (!p.reply && !p.said) {
       const hint = this.wrap('the wyrm watches you. press "talk" and say something clever.', this.w * 0.8, 12);
@@ -824,7 +889,7 @@ export class SceneView {
   }
 
   /** A speech bubble. A negative y anchors it that far from the bottom edge. */
-  private bubble(str: string, x: number, y: number, maxW: number, color: string, tail: 'left' | 'right', maxLines = 6) {
+  private bubble(str: string, x: number, y: number, maxW: number, color: string, tail: 'left' | 'right', maxLines = 6): { y: number; h: number } {
     const ctx = this.ctx;
     const size = this.narrow ? 11 : 12;
     let lines = this.wrap(str, maxW - 20, size);
@@ -846,6 +911,39 @@ export class SceneView {
     ctx.stroke();
     this.noGlow();
     lines.forEach((l, i) => this.text(l, x + 10, y + 14 + i * (size + 5), size, COLORS.text, 'left'));
+    return { y, h };
+  }
+
+  private drawChats() {
+    const life = 4.5;
+    this.chats = this.chats.filter((c) => this.now - c.t0 < life);
+    const px = this.narrow ? 2.2 : 2.8;
+    const aw = AV_W * px;
+    const maxW = Math.min(320, this.w - aw - 40);
+    // above the map legend in a delve; lower in the lobby, clear of the crew's names
+    let bottom = this.scene ? this.h - 30 : this.h - 8;
+    for (const c of [...this.chats].reverse()) {
+      const age = this.now - c.t0;
+      const alpha = Math.min(1, age * 5, (life - age) / 0.6);
+      const slide = Math.max(0, 1 - age * 6) * -30;
+      this.ctx.globalAlpha = Math.max(0, alpha);
+      const size = 11;
+      const lines = this.wrap(c.text, maxW - 20, size).slice(0, 2);
+      const h = Math.max(AV_H * px, lines.length * (size + 5) + 22);
+      const y = bottom - h;
+      const x = 12 + slide;
+      this.ctx.fillStyle = 'rgba(7, 6, 13, 0.9)';
+      this.roundRect(x, y, aw + maxW + 16, h, 6);
+      this.ctx.fill();
+      this.ctx.strokeStyle = 'rgba(255, 43, 214, 0.6)';
+      this.ctx.lineWidth = 1;
+      this.ctx.stroke();
+      drawAvatar(this.ctx, buildAvatar(avatarSeed(c.handle, c.avatar), c.classes), x + 6 + aw / 2, y + h / 2, px, { t: this.now, glow: true });
+      this.text(c.handle, x + aw + 14, y + 10, 10, COLORS.magenta, 'left', 700);
+      lines.forEach((l, i) => this.text(l, x + aw + 14, y + 24 + i * (size + 5), size, COLORS.text, 'left'));
+      bottom = y - 6;
+    }
+    this.ctx.globalAlpha = 1;
   }
 
   // ---------------------------------------------------------------- vault

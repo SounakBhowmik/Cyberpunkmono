@@ -14,6 +14,8 @@ export interface RollView {
 
 export interface HudMember {
   handle: string;
+  /** Reroll count: the avatar is generated from handle + this number. */
+  avatar: number;
   /** Class names, e.g. ["rogue"] or ["mage", "cleric"]. */
   classes: string[];
   you: boolean;
@@ -25,7 +27,7 @@ export interface HudMember {
 export type WyrmColor = 'red' | 'blue' | 'green' | 'black' | 'white';
 
 export type HudState =
-  | { mode: 'street'; handle?: string }
+  | { mode: 'street'; handle?: string; avatar?: number }
   | { mode: 'safehouse'; code: string; party: HudMember[] }
   | {
       mode: 'delve';

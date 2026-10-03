@@ -10,6 +10,8 @@ Everything has sound: chiptune effects synthesized live with the Web Audio API (
 
 It works on phones too: the map turns vertical, buttons become one swipeable row of thumb-sized targets, and touch devices get a proper input box instead of typing into the terminal.
 
+Every netrunner is a little pixel-art creature, grown procedurally from their handle: an arcade-style alien with its own colors, eyes and limbs, deliberately not human. Your class adds gear on top (a hood for the rogue, an antenna crown for the mage, a halo and chest glyph for the cleric) so your creature stays the same whichever role you're dealt. They line up in the safehouse, stand in formation in fights, walk the map as the rogue's token, and pop up in the corner of the scene whenever someone chats. Don't like yours? `reroll` grows a new one.
+
 Nobody sees the whole picture, so you win by talking to each other:
 
 - **Runner (rogue)** walks the dungeon under fog of war: their map only shows rooms they've visited and the doors next to them. They pick locks, loot programs and parley with the wyrm.
@@ -69,6 +71,7 @@ src/server/game/narrator.ts  the dungeon master
 src/client/main.ts           terminal, line editor, action buttons, HUD, message queue
 src/client/scene.ts          the animated canvas scene: city, map, fights, wyrm, dice, effects
 src/client/sound.ts          synthesized sound effects and ambience
+src/client/avatar.ts         procedural pixel-creature avatars with class gear
 test/                        world invariants, full delves, combat, breeds, programs
 scripts/balance.mts          simulates 400 delves with a bot crew to tune difficulty
 ```

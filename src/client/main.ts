@@ -1,6 +1,7 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
-import { MAX_LINE_LENGTH, type ActionButton, type ClientMessage, type HudState, type RollView, type SceneRoom, type SceneState, type ServerMessage } from '../shared/protocol';
+import { MAX_LINE_LENGTH, type ActionButton, type ClientMessage, type HudMember, type HudState, type RollView, type SceneRoom, type SceneState, type ServerMessage } from '../shared/protocol';
+import { avatarDataUrl, avatarSeed } from './avatar';
 import { SceneView } from './scene';
 import { Sound, type Ambience } from './sound';
 
@@ -152,6 +153,7 @@ term.onData((data) => {
 let animating = false;
 let lastScene: SceneState | undefined;
 let lastActions: ActionButton[] = [];
+let lastHud: HudState | undefined;
 
 const scene = new SceneView(document.getElementById('scene') as HTMLCanvasElement, (room, sc) => clickRoom(room, sc));
 
@@ -226,6 +228,27 @@ function clickRoom(room: SceneRoom, sc: SceneState) {
 
 const actionsEl = document.getElementById('actions')!;
 
+/** Buttons for the street and the safehouse, where the server sends no scene. */
+function lobbyActions(): ActionButton[] {
+  const h = lastHud;
+  if (!h) return [];
+  if (h.mode === 'street') {
+    return [
+      { label: 'create safehouse', cmd: 'create', tone: 'go' },
+      { label: 'join', cmd: 'join ', input: true, tone: 'talk', hint: 'type the 4-letter code' },
+      { label: 'reroll avatar', cmd: 'reroll', tone: 'magic' },
+    ];
+  }
+  if (h.mode === 'safehouse') {
+    const me = h.party.find((m) => m.you);
+    const out: ActionButton[] = [];
+    if (me?.host) out.push({ label: 'start the delve', cmd: 'start', tone: 'go', disabled: h.party.length < 2, hint: 'needs at least 2 netrunners' });
+    out.push({ label: 'reroll avatar', cmd: 'reroll', tone: 'magic' }, { label: 'leave', cmd: 'leave', tone: 'info' });
+    return out;
+  }
+  return [];
+}
+
 function renderActions() {
   actionsEl.replaceChildren();
   if (lastScene) {
@@ -240,7 +263,7 @@ function renderActions() {
     };
     if (lastScene.view !== 'explore') actionsEl.append(map);
   }
-  for (const a of lastActions) {
+  for (const a of lastScene ? lastActions : lobbyActions()) {
     const b = document.createElement('button');
     b.className = `act tone-${a.tone ?? 'info'}`;
     b.textContent = a.input ? `${a.label} …` : a.label;
@@ -256,7 +279,7 @@ function renderActions() {
   if (!actionsEl.children.length) {
     const hint = document.createElement('span');
     hint.className = 'act-hint';
-    hint.textContent = lastScene ? 'watch the map and talk to your crew. type to chat.' : 'type below to play';
+    hint.textContent = lastScene ? 'watch the map and talk to your crew. type to chat.' : 'pick a handle: type it below';
     actionsEl.append(hint);
   }
 }
@@ -277,14 +300,16 @@ function bar(value: number, max: number, cls: string) {
 
 function renderHud(h: HudState) {
   if (h.mode === 'street') {
-    hudEl.innerHTML = `<div class="row">${chip('THE STREET', 'tag')}<span class="muted">${esc(h.handle ?? '')} · create a safehouse or join one</span></div>`;
+    const av = h.handle ? `<img class="av" alt="" src="${avatarDataUrl(avatarSeed(h.handle, h.avatar ?? 0), [], 2)}">` : '';
+    hudEl.innerHTML = `<div class="row">${chip('THE STREET', 'tag')}${h.handle ? chip(`${av}${esc(h.handle)}`, 'you') : ''}<span class="muted">create a safehouse or join one</span></div>`;
     return;
   }
   const party = h.party
     .map((m) => {
       const classes = m.classes.length ? ` <i>${esc(m.classes.join('+'))}</i>` : '';
       const mark = m.host ? ' ★' : m.ready === true ? ' <em class="ok">ready</em>' : m.ready === false ? ' <em>choosing</em>' : '';
-      return chip(`${esc(m.handle)}${classes}${mark}`, m.you ? 'you' : '');
+      const av = `<img class="av" alt="" src="${avatarDataUrl(avatarSeed(m.handle, m.avatar), m.classes, 2)}">`;
+      return chip(`${av}${esc(m.handle)}${classes}${mark}`, m.you ? 'you' : '');
     })
     .join('');
   if (h.mode === 'safehouse') {
@@ -324,19 +349,33 @@ async function drain() {
     const msg = queue.shift()!;
     if (msg.type === 'out') {
       // crew chat lines start with a magenta [handle]
-      if (msg.text.startsWith('\x1b[95m[')) sound.play('chat');
+      const chat = /^\x1b\[95m\[([^\]]+)\]\x1b\[0m ([\s\S]*)$/.exec(msg.text);
+      if (chat) {
+        sound.play('chat');
+        const who = crewMember(chat[1]!);
+        if (who) scene.chat(who, chat[2]!);
+      }
       print(msg.text);
     }
     else if (msg.type === 'roll') await animateRoll(msg.roll);
     else if (msg.type === 'hud') {
+      lastHud = msg.hud;
       renderHud(msg.hud);
       if (msg.hud.mode !== 'delve') {
         lastScene = undefined;
         lastActions = [];
         scene.setLobby(
           msg.hud.mode === 'street'
-            ? { title: 'NEO-AVALON', subtitle: 'type create, or join <code>' }
-            : { title: `SAFEHOUSE ${msg.hud.code}`, subtitle: `${msg.hud.party.length}/4 netrunners · share the code · host types start` },
+            ? {
+                title: 'NEO-AVALON',
+                subtitle: 'create a safehouse, or join your crew',
+                ...(msg.hud.handle ? { crew: [{ handle: msg.hud.handle, avatar: msg.hud.avatar ?? 0, you: true }] } : {}),
+              }
+            : {
+                title: `SAFEHOUSE ${msg.hud.code}`,
+                subtitle: `${msg.hud.party.length}/4 netrunners · share the code`,
+                crew: msg.hud.party.map((m) => ({ handle: m.handle, avatar: m.avatar, host: m.host, you: m.you })),
+              },
         );
         renderActions();
         sound.setAmbience('lobby');
@@ -367,6 +406,11 @@ async function drain() {
     }
   }
   draining = false;
+}
+
+function crewMember(handle: string): HudMember | undefined {
+  const party = lastScene?.party ?? (lastHud && lastHud.mode !== 'street' ? lastHud.party : []);
+  return party.find((m) => m.handle === handle);
 }
 
 function send(msg: ClientMessage) {

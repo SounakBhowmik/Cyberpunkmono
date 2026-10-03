@@ -22,6 +22,7 @@ type PlayerState = 'naming' | 'lobby' | 'room';
 
 class Player implements GamePlayer {
   handle = '';
+  avatar = 0;
   state: PlayerState = 'naming';
   room?: Room;
 
@@ -129,7 +130,13 @@ export class Hub {
     p.state = 'lobby';
     p.send(`welcome to the net, ${c.bold(text)}.\n${this.lobbyHelp()}`);
     p.setPrompt(`${c.magenta(p.handle)}> `);
-    p.setHud({ mode: 'street', handle: p.handle });
+    p.setHud({ mode: 'street', handle: p.handle, avatar: p.avatar });
+  }
+
+  private reroll(p: Player) {
+    p.avatar++;
+    if (p.room) this.pushSafehouseHud(p.room);
+    else p.setHud({ mode: 'street', handle: p.handle, avatar: p.avatar });
   }
 
   private pushSafehouseHud(room: Room) {
@@ -137,7 +144,7 @@ export class Hub {
       q.setHud({
         mode: 'safehouse',
         code: room.code,
-        party: room.players.map((r) => ({ handle: r.handle, classes: [], you: r === q, host: r === room.host })),
+        party: room.players.map((r) => ({ handle: r.handle, avatar: r.avatar, classes: [], you: r === q, host: r === room.host })),
       });
     }
   }
@@ -146,6 +153,7 @@ export class Hub {
     return [
       `  ${c.cyan('create'.padEnd(12))}${c.dim('open a safehouse and get a room code')}`,
       `  ${c.cyan('join <code>'.padEnd(12))}${c.dim('join your crew')}`,
+      `  ${c.cyan('reroll'.padEnd(12))}${c.dim('grow a new avatar')}`,
     ].join('\n');
   }
 
@@ -155,6 +163,8 @@ export class Hub {
         return this.createRoom(p);
       case 'join':
         return this.joinRoom(p, (rest[0] ?? '').toUpperCase());
+      case 'reroll':
+        return this.reroll(p);
       case 'help':
         return p.send(this.lobbyHelp());
       default:
@@ -226,6 +236,8 @@ export class Hub {
         return this.leaveRoom(p);
       case 'start':
         return this.startGame(p, room);
+      case 'reroll':
+        return this.reroll(p);
       case 'help':
         return p.send(this.roomHelp(room, p));
       default:
@@ -277,7 +289,7 @@ export class Hub {
       p.state = 'lobby';
       p.send(`back on the street.\n${this.lobbyHelp()}`);
       p.setPrompt(`${c.magenta(p.handle)}> `);
-      p.setHud({ mode: 'street', handle: p.handle });
+      p.setHud({ mode: 'street', handle: p.handle, avatar: p.avatar });
     }
   }
 

@@ -14,6 +14,8 @@ export type Role = 'RUNNER' | 'OPERATOR' | 'SENTRY';
 export interface GamePlayer {
   readonly id: string;
   readonly handle: string;
+  /** Avatar reroll count, chosen in the lobby. */
+  readonly avatar?: number;
   send(text: string): void;
   setPrompt(text: string): void;
   showRoll(roll: RollView): void;
@@ -289,6 +291,7 @@ export class Game {
 
     const party: HudMember[] = [...this.players.values()].map((p) => ({
       handle: p.handle,
+      avatar: p.avatar ?? 0,
       classes: [...(this.roles.get(p.id) ?? [])].map((r) => CLASS_OF[r]),
       you: p.id === id,
       ...(this.encounter ? { ready: this.encounter.actions.has(p.id) } : {}),
@@ -359,6 +362,7 @@ export class Game {
     const w = this.world;
     const party: HudMember[] = [...this.players.values()].map((p) => ({
       handle: p.handle,
+      avatar: p.avatar ?? 0,
       classes: [...(this.roles.get(p.id) ?? [])].map((r) => CLASS_OF[r]),
       you: p.id === id,
       ...(this.encounter ? { ready: this.encounter.actions.has(p.id) } : {}),

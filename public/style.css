@@ -272,3 +272,11 @@ header, #hud, #actions, #cmdbar { flex-shrink: 0; }
   #terminal { flex: 0 0 22dvh; min-height: 110px; padding: 6px; }
   #cmdbar { margin-top: 6px; }
 }
+
+#hud .chip .av {
+  width: 16px;
+  height: auto;
+  margin-right: 4px;
+  vertical-align: -3px;
+  image-rendering: pixelated;
+}
