@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ActionButton, Fx, HudState, SceneState } from '../src/shared/protocol.js';
+import type { ActionButton, FeedItem, Fx, HudState, SceneState } from '../src/shared/protocol.js';
 import { ScriptedJudge } from '../src/server/game/parley.js';
 import { Hub, type Session } from '../src/server/hub.js';
 
@@ -20,6 +20,10 @@ class FakeSession implements Session {
     this.scenes.push(s);
   }
   fx(_f: Fx) {}
+  feeds: FeedItem[] = [];
+  feed(item: FeedItem) {
+    this.feeds.push(item);
+  }
   clear() {}
   close() {}
   get lastHud() {

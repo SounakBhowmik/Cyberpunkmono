@@ -1,165 +1,25 @@
-// Procedural pixel-art avatars: small mythical creatures (kitsune, griffin,
-// naga, oni, phoenix, wisp, tengu) grown from a seed: the player's handle plus
-// how many times they've rerolled. The species, palette and markings come from
-// the seed; class gear (blade, rune orb, shield) is drawn over the top, so a
-// player keeps the same creature whatever class they're dealt.
+// Procedural pixel-art avatars: small symmetric non-human creatures, grown
+// from a seed (the player's handle plus how many times they've rerolled).
+// Class gear (hood, antenna crown, halo) is drawn over the creature, so a
+// player keeps the same body whatever role they're dealt.
 
 export const AV_W = 11;
 export const AV_H = 12;
 
-/** b body, s shade, e eye, a accent (tails, wings, flame), w bone (beak, horns, fangs), g gear, t glowing gear. */
-type Cell = 'b' | 's' | 'e' | 'a' | 'w' | 'g' | 't' | null;
-
-interface Species {
-  name: string;
-  rows: string[];
-  /** Accent hue range: fire creatures burn warm, the rest contrast with their body. */
-  accent: 'fire' | 'contrast';
-}
-
-const SPECIES: Species[] = [
-  {
-    name: 'kitsune',
-    accent: 'contrast',
-    rows: [
-      '.b.......b.',
-      '.bb.....bb.',
-      '.bab...bab.',
-      '.bbbbbbbbb.',
-      'bbebbbbbebb',
-      'bbbbbbbbbbb',
-      '.bbbwwwbbb.',
-      '..bbbsbbb..',
-      'a..bbbbb..a',
-      'aa.bbbbb.aa',
-      '.aabbbbbaa.',
-      '..bb...bb..',
-    ],
-  },
-  {
-    name: 'griffin',
-    accent: 'contrast',
-    rows: [
-      '....bbb....',
-      '...bbbbb...',
-      '...bebbb...',
-      '..bbbbwww..',
-      'a..bbbbww.a',
-      'aa.bbbbb.aa',
-      'aaabbbbbaaa',
-      '.aabbbbbaa.',
-      '...bbbbb...',
-      '...bs.sb...',
-      '..ww...ww..',
-      '...........',
-    ],
-  },
-  {
-    name: 'naga',
-    accent: 'contrast',
-    rows: [
-      '...bbbbb...',
-      '..bbbbbbb..',
-      '.bbaebeabb.',
-      '.bbbbbbbbb.',
-      '.bbbbwbbbb.',
-      '..bbbbbbb..',
-      '...abbba...',
-      '....bbb....',
-      '...bbb.....',
-      '..bbb......',
-      '..bbbbbb...',
-      '...sssss...',
-    ],
-  },
-  {
-    name: 'oni',
-    accent: 'contrast',
-    rows: [
-      'w.........w',
-      'ww.......ww',
-      '.wbbbbbbbw.',
-      '.bbbbbbbbb.',
-      '.beebbbeeb.',
-      '.bbbbbbbbb.',
-      '.bwbbbbbwb.',
-      '.bbaaaaabb.',
-      '..bbbbbbb..',
-      '.bbbbbbbbb.',
-      'bb.bbbbb.bb',
-      '...bb.bb...',
-    ],
-  },
-  {
-    name: 'phoenix',
-    accent: 'fire',
-    rows: [
-      '.....a.....',
-      '....aaa....',
-      '....bbb....',
-      '...bebbw...',
-      'a..bbbbww.a',
-      'aa.bbbbb.aa',
-      'aaaabbbaaaa',
-      '.aaabbbaaa.',
-      '..aabbbaa..',
-      '....bab....',
-      '...aa.aa...',
-      '..a.....a..',
-    ],
-  },
-  {
-    name: 'wisp',
-    accent: 'fire',
-    rows: [
-      '.....a.....',
-      '....aa.....',
-      '...aaaa.a..',
-      '..aabbaaa..',
-      '.aabbbbba..',
-      '.abebbbeba.',
-      '.abbbbbbba.',
-      '.abbbwbbba.',
-      '..abbbbba..',
-      '...abbba...',
-      '....aba....',
-      '.....a.....',
-    ],
-  },
-  {
-    name: 'tengu',
-    accent: 'contrast',
-    rows: [
-      '...bbbbb...',
-      '..bbbbbbb..',
-      '..beebbeb..',
-      '..bbbbbbb..',
-      '..bbbbwwwww',
-      'a..bbbbb..a',
-      'aa.bbbbb.aa',
-      'aaabbbbbaaa',
-      '..abbbbba..',
-      '...bbbbb...',
-      '...b...b...',
-      '..bb...bb..',
-    ],
-  },
-];
+/** Cell codes: b body, s shade, e eye, m mouth cut-out, g gear, t glowing gear tip, h halo. */
+type Cell = 'b' | 's' | 'e' | 'm' | 'g' | 't' | 'h' | null;
 
 export interface Avatar {
-  species: string;
   grid: Cell[][];
   body: string;
   shade: string;
   eye: string;
-  accent: string;
-  bone: string;
   gear: string;
   /** Blink phase offset so a crew doesn't blink in unison. */
   phase: number;
 }
 
-const CLASS_GEAR: Record<string, string> = { striker: '#ff3860', mystic: '#00f0ff', guardian: '#ffe600' };
+const CLASS_GEAR: Record<string, string> = { rogue: '#39ff88', mage: '#00f0ff', cleric: '#ffe600' };
 
 /** FNV-1a: a small stable string hash. */
 export function avatarSeed(handle: string, reroll = 0): number {
@@ -188,57 +48,94 @@ export function buildAvatar(seed: number, classes: string[] = []): Avatar {
   const hit = cache.get(key);
   if (hit) return hit;
 
-  // every random draw happens regardless of class, so gear never changes the creature
   const r = rng(seed);
-  const species = SPECIES[Math.floor(r() * SPECIES.length)]!;
+  // Colours first, and every random draw below happens whatever the class,
+  // so the creature is identical with or without gear.
   const hue = Math.floor(r() * 360);
-  const fireHue = 10 + Math.floor(r() * 40);
   const phase = r() * 4;
-  const marking = Math.floor(r() * 3);
-  const flip = r() < 0.5;
+  const grid: Cell[][] = Array.from({ length: AV_H }, () => Array<Cell>(AV_W).fill(null));
+  const set = (row: number, col: number, v: Cell) => {
+    if (row < 0 || row >= AV_H || col < 0 || col >= AV_W) return;
+    grid[row]![col] = v;
+    grid[row]![AV_W - 1 - col] = v;
+  };
+  const get = (row: number, col: number) => grid[row]?.[col] ?? null;
 
-  const grid: Cell[][] = species.rows.map((row) => [...(flip ? [...row].reverse().join('') : row)].map((ch) => (ch === '.' ? null : (ch as Cell))));
-  // markings: a little per-creature pattern so two kitsune never match
-  const markRows = marking === 0 ? [5, 6] : marking === 1 ? [3, 8] : [7];
-  for (const row of markRows) {
+  // The creature lives in rows 3-11; rows 0-2 are left for gear.
+  const headRows = 3 + Math.floor(r() * 2); // 3-4 rows of head
+  for (let row = 3; row < AV_H; row++) {
+    const zone = row < 3 + headRows ? 'head' : row < 10 ? 'body' : 'legs';
+    for (let col = 1; col <= 5; col++) {
+      const centre = 1 - (5 - col) / 5; // 0.2 at the edge, 1 at the spine
+      const density = zone === 'head' ? 0.35 + centre * 0.6 : zone === 'body' ? 0.2 + centre * 0.6 : 0.15 + (col % 2) * 0.35;
+      if (r() < density) set(row, col, 'b');
+    }
+  }
+  // a spine so it reads as one creature
+  for (let row = 4; row <= 8; row++) set(row, 5, 'b');
+  for (let row = 4; row <= 6; row++) set(row, 4, 'b');
+
+  // eyes: never two, mostly
+  const eyeRow = 5;
+  const eyes = r();
+  const eyeCols = eyes < 0.3 ? [5] : eyes < 0.55 ? [3, 5] : eyes < 0.8 ? [3] : [2, 4];
+  for (const c of eyeCols) {
+    set(eyeRow, c, 'e');
+    if (!get(eyeRow - 1, c)) set(eyeRow - 1, c, 'b');
+    if (!get(eyeRow + 1, c)) set(eyeRow + 1, c, 'b');
+  }
+  // a grille mouth
+  if (r() < 0.55) {
+    const mr = eyeRow + 2;
+    set(mr, 4, 'm');
+    set(mr, 5, 'm');
+  }
+  // feelers when there's no gear to make room for
+  const feelers = r() < 0.5;
+  if (!classes.length && feelers) {
+    set(2, 3, 'b');
+    set(1, 2, 'b');
+  }
+  // shade the undersides for a bit of depth
+  for (let row = 0; row < AV_H; row++) {
     for (let col = 0; col < AV_W; col++) {
-      if (grid[row]?.[col] === 'b' && (col + row) % 3 === 0) grid[row]![col] = 's';
+      if (get(row, col) === 'b' && !get(row + 1, col)) grid[row]![col] = 's';
     }
   }
 
-  const put = (row: number, col: number, v: Cell) => {
-    if (row >= 0 && row < AV_H && col >= 0 && col < AV_W) grid[row]![col] = v;
-  };
+  // class gear on top
   const has = (c: string) => classes.includes(c);
-  if (has('striker')) {
-    // a blade over the shoulder
-    for (let row = 1; row <= 7; row++) put(row, 10, 'g');
-    put(0, 10, 't');
-    put(7, 9, 'g');
+  if (has('rogue')) {
+    for (let c = 2; c <= 5; c++) set(2, c, 'g');
+    set(3, 1, 'g');
+    set(4, 1, 'g');
+    set(5, 0, 'g');
+    set(3, 2, 'g');
   }
-  if (has('mystic')) {
-    // a floating rune orb
-    put(0, 1, 't');
-    put(1, 0, 't');
-    put(1, 2, 't');
-    put(1, 1, 'g');
+  if (has('mage')) {
+    set(2, 3, 'g');
+    set(2, 5, 'g');
+    set(1, 5, 'g');
+    set(0, 5, 't');
   }
-  if (has('guardian')) {
-    // a little shield in front
-    for (const [row, col] of [[8, 0], [8, 1], [8, 2], [9, 0], [9, 1], [9, 2], [10, 1]] as const) put(row, col, 'g');
-    put(9, 1, 't');
+  if (has('cleric')) {
+    if (!has('mage')) {
+      for (let c = 3; c <= 5; c++) set(0, c, 'h');
+      set(1, 2, 'h');
+    }
+    set(8, 5, 'h');
+    set(9, 4, 'h');
+    set(9, 5, 'h');
+    set(10, 5, 'h');
   }
 
-  const accentHue = species.accent === 'fire' ? fireHue : (hue + 150 + Math.floor(r() * 60)) % 360;
+  const gear = CLASS_GEAR[classes[0] ?? ''] ?? `hsl(${(hue + 160) % 360} 90% 65%)`;
   const avatar: Avatar = {
-    species: species.name,
     grid,
-    body: `hsl(${hue} 65% 56%)`,
-    shade: `hsl(${hue} 60% 32%)`,
-    eye: `hsl(${(hue + 180) % 360} 100% 85%)`,
-    accent: species.accent === 'fire' ? `hsl(${accentHue} 100% 60%)` : `hsl(${accentHue} 85% 62%)`,
-    bone: '#f2ead8',
-    gear: CLASS_GEAR[classes[0] ?? ''] ?? '#d7e3ff',
+    body: `hsl(${hue} 70% 58%)`,
+    shade: `hsl(${hue} 65% 34%)`,
+    eye: `hsl(${(hue + 180) % 360} 100% 82%)`,
+    gear,
     phase,
   };
   cache.set(key, avatar);
@@ -246,7 +143,7 @@ export function buildAvatar(seed: number, classes: string[] = []): Avatar {
 }
 
 export interface DrawOpts {
-  /** Seconds, for blinking, flickering flame and glowing gear. Omit for a still frame. */
+  /** Seconds, for blinking and the glowing tip. Omit for a still frame. */
   t?: number;
   /** Draw it all white (a hit flash). */
   flash?: boolean;
@@ -256,8 +153,7 @@ export interface DrawOpts {
 /** Draw centred on (cx, cy) with each pixel `px` screen pixels wide. */
 export function drawAvatar(ctx: CanvasRenderingContext2D, av: Avatar, cx: number, cy: number, px: number, opts: DrawOpts = {}) {
   const t = opts.t ?? 0;
-  const live = opts.t !== undefined;
-  const blink = live && (t + av.phase) % 4 < 0.12;
+  const blink = opts.t !== undefined && (t + av.phase) % 4 < 0.12;
   const x0 = Math.round(cx - (AV_W * px) / 2);
   const y0 = Math.round(cy - (AV_H * px) / 2);
   const p = Math.ceil(px);
@@ -270,23 +166,19 @@ export function drawAvatar(ctx: CanvasRenderingContext2D, av: Avatar, cx: number
         case 'b': color = av.body; break;
         case 's': color = av.shade; break;
         case 'e': color = blink ? av.shade : av.eye; break;
-        case 'a': color = av.accent; break;
-        case 'w': color = av.bone; break;
+        case 'm': color = '#05040a'; break;
         case 'g': color = av.gear; break;
         case 't': color = av.gear; break;
+        case 'h': color = '#ffe600'; break;
       }
-      if (opts.flash) color = '#ffffff';
-      // accent pixels shimmer (flame, tails, wings)
-      const shimmer = live && cell === 'a' ? Math.sin(t * 6 + row * 0.9 + col * 0.4) * 0.5 + 0.5 : 1;
-      const glowing = opts.glow && (cell === 'e' || cell === 't' || (cell === 'a' && shimmer > 0.7));
+      if (opts.flash && cell !== 'm') color = '#ffffff';
+      const glowing = opts.glow && (cell === 'e' || cell === 't' || cell === 'h');
       if (glowing) {
         ctx.shadowColor = color;
         ctx.shadowBlur = px * 2.5 * (cell === 't' ? 0.6 + 0.4 * Math.sin(t * 5) : 1);
       }
-      if (shimmer < 1) ctx.globalAlpha = 0.7 + shimmer * 0.3;
       ctx.fillStyle = color;
       ctx.fillRect(x0 + col * px, y0 + row * px, p, p);
-      if (shimmer < 1) ctx.globalAlpha = 1;
       if (glowing) ctx.shadowBlur = 0;
     }
   }

@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { MAX_LINE_LENGTH, type ClientMessage, type ActionButton, type Fx, type HudState, type SceneState, type ServerMessage } from '../shared/protocol.js';
+import { MAX_LINE_LENGTH, type ClientMessage, type ActionButton, type FeedItem, type Fx, type HudState, type SceneState, type ServerMessage } from '../shared/protocol.js';
 import { createAi } from './ai.js';
 import { createJudge } from './game/parley.js';
 import { createNarrator } from './game/narrator.js';
@@ -67,6 +67,9 @@ class WsSession implements Session {
   }
   fx(fx: Fx) {
     this.push({ type: 'fx', fx });
+  }
+  feed(item: FeedItem) {
+    this.push({ type: 'feed', item });
   }
   clear() {
     this.push({ type: 'clear' });

@@ -1,8 +1,14 @@
 // Messages exchanged over the WebSocket. The server owns all game state; the
-// client draws the scene, the HUD and the buttons, and plays effects.
+// client draws the scene, shows story and messages on the game console, plays
+// music and effects, and keeps a small terminal for typed commands.
 
-export type ClassId = 'striker' | 'mystic' | 'guardian';
+export type ClassId = 'rogue' | 'mage' | 'cleric';
+export type ModeId = 'adventure' | 'heist' | 'survival';
 export type WyrmColor = 'red' | 'blue' | 'green' | 'black' | 'white';
+export type Mood = 'lobby' | 'story' | 'tense' | 'combat' | 'boss' | 'night' | 'victory' | 'defeat';
+export type Backdrop = 'city' | 'street' | 'market' | 'bridge' | 'shrine' | 'tower' | 'vault' | 'lair' | 'camp';
+export type Glyph = 'moon' | 'eye' | 'serpent' | 'crown' | 'key';
+export type OptionIcon = 'fight' | 'sneak' | 'talk' | 'help' | 'rest' | 'loot' | 'risk' | 'path';
 
 export interface HudMember {
   handle: string;
@@ -11,7 +17,7 @@ export interface HudMember {
   classes: ClassId[];
   you: boolean;
   host?: boolean;
-  /** In combat: has this player used every action they have this round? */
+  /** In a fight: has this player used every action they have this round? */
   ready?: boolean;
 }
 
@@ -23,72 +29,74 @@ export interface WyrmInfo {
   temperament: string;
 }
 
+export interface Meter {
+  /** "corruption", "heat" or "dread", depending on the mode. */
+  name: string;
+  value: number;
+}
+
 export type HudState =
   | { mode: 'street'; handle?: string; avatar?: number }
-  | { mode: 'safehouse'; code: string; party: HudMember[] }
+  | { mode: 'safehouse'; code: string; party: HudMember[]; story: ModeId }
   | {
       mode: 'delve';
       code: string;
+      story: ModeId;
+      chapter: string;
+      meter: Meter;
       wyrm: WyrmInfo;
-      corruption: number;
-      floor: number;
-      floors: number;
-      seals: number;
       party: HudMember[];
-      relics: { name: string; desc: string }[];
+      boons: { name: string; desc: string }[];
+      wards: number;
     };
 
-/** What a foe will do when the round resolves. Always visible to players. */
 export type IntentKind = 'attack' | 'charge' | 'heavy' | 'shell' | 'wail';
 
 export interface Intent {
   kind: IntentKind;
   amount: number;
-  /** e.g. "CLAW 8" */
   label: string;
-  /** e.g. "a Ward blocks it" */
   hint: string;
 }
 
 export interface Foe {
-  /** Sprite id. */
   id: string;
   name: string;
   hp: number;
   maxHp: number;
-  intent: Intent;
+  /** Only the Mage sees this, until they call it out. */
+  intent?: Intent;
+  /** What the Mage called out this round, visible to everyone. */
+  called?: { by: string; label: string };
   exposed?: boolean;
   elite?: boolean;
   boss?: boolean;
 }
 
-export type RouteKind = 'fight' | 'elite' | 'shrine' | 'cache' | 'boss';
-
-export interface RouteOption {
+export interface ChoiceOption {
   id: string;
-  kind: RouteKind;
   label: string;
   detail: string;
-  /** Handles of players who voted for this option. */
+  icon: OptionIcon;
   votes: string[];
-  /** For fights: the sprite id of the horror waiting there. */
-  foe?: string;
 }
 
 export interface SceneState {
-  view: 'route' | 'combat' | 'boss';
-  floor: number;
-  floors: number;
-  corruption: number;
-  seals: number;
+  view: 'story' | 'puzzle' | 'parley' | 'combat' | 'boss' | 'end';
+  story: ModeId;
+  chapter: { index: number; total: number; title: string };
+  backdrop: Backdrop;
+  music: Mood;
+  meter: Meter;
   party: HudMember[];
   wyrm: WyrmInfo;
-  /** The kinds of rooms already passed, for drawing the descent. */
-  path: RouteKind[];
-  options?: RouteOption[];
+  choice?: { prompt: string; options: ChoiceOption[] };
+  puzzle?: { length: number; progress: number; misses: number; maxMisses: number; sequence?: Glyph[] };
+  parley?: { npc: string; name: string; said?: string; saidBy?: string; reply?: string; progress: number; goal: number; linesLeft: number };
   foe?: Foe;
   round?: number;
-  parley?: { said?: string; saidBy?: string; reply?: string; mood?: 'calmer' | 'angrier' | 'same' };
+  wards?: number;
+  ending?: { title: string; text: string; win: boolean };
 }
 
 export interface ActionButton {
@@ -99,21 +107,31 @@ export interface ActionButton {
   hint?: string;
   tone?: 'go' | 'risk' | 'fight' | 'magic' | 'talk' | 'info';
   disabled?: boolean;
-  /** Buttons are grouped under their class name in the action bar. */
+  /** Buttons are grouped under a small heading in the action bar. */
   group?: string;
 }
+
+export type Portrait = { type: 'narrator' } | { type: 'npc'; id: string } | { type: 'player'; handle: string; avatar: number; classes: ClassId[] };
+
+/** Things that appear on the game console rather than in the terminal. */
+export type FeedItem =
+  | { kind: 'story'; speaker: string; text: string; portrait: Portrait }
+  | { kind: 'notice'; text: string; tone?: 'good' | 'bad' | 'info' }
+  | { kind: 'chat'; from: Pick<HudMember, 'handle' | 'avatar' | 'classes'>; text: string }
+  | { kind: 'tip'; text: string };
 
 export type Move = 'strike' | 'fury' | 'hex' | 'bolt' | 'ward' | 'mend' | 'speak';
 
 export type Fx =
-  | { kind: 'intro'; wyrm: WyrmInfo }
-  | { kind: 'enter'; room: RouteKind }
+  | { kind: 'title'; title: string; subtitle: string }
   | { kind: 'act'; by: string; cls: ClassId; move: Move; amount?: number }
   | { kind: 'foe'; move: IntentKind; amount: number; blocked: boolean }
   | { kind: 'stun' }
   | { kind: 'heal'; amount: number }
+  | { kind: 'hurt'; amount: number }
   | { kind: 'slay'; boss?: boolean }
-  | { kind: 'relic'; name: string }
+  | { kind: 'glyph'; ok: boolean; glyph: Glyph }
+  | { kind: 'boon'; name: string }
   | { kind: 'vote'; by: string }
   | { kind: 'end'; win: boolean };
 
@@ -123,6 +141,7 @@ export type ServerMessage =
   | { type: 'clear' }
   | { type: 'hud'; hud: HudState }
   | { type: 'scene'; scene: SceneState; actions: ActionButton[] }
+  | { type: 'feed'; item: FeedItem }
   | { type: 'fx'; fx: Fx };
 
 export type ClientMessage = { type: 'line'; text: string };

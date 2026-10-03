@@ -1,67 +1,47 @@
 import type { Ai } from '../ai.js';
 
-// The dungeon master: a line or two of narration at the moments that matter.
+// An AI game master's aside: one line at each new chapter, reacting to what
+// the crew just chose. The story itself is authored; without an API key the
+// narrator stays quiet rather than repeating it.
 
-export type NarrationEvent =
-  | { kind: 'start'; wyrmName: string; breedTitle: string; district: string }
-  | { kind: 'slay'; foe: string }
-  | { kind: 'end'; win: boolean; wyrmName: string };
+export type NarrationEvent = { kind: 'chapter'; story: string; chapter: string; lastChoice?: string; meterName: string; meter: number };
 
 export interface Narrator {
   readonly label: string;
-  narrate(event: NarrationEvent): Promise<string>;
+  narrate(event: NarrationEvent): Promise<string | null>;
 }
 
-const pick = <T>(items: T[]) => items[Math.floor(Math.random() * items.length)]!;
-
-export class ScriptedNarrator implements Narrator {
-  readonly label = 'scripted';
-
-  async narrate(e: NarrationEvent): Promise<string> {
-    switch (e.kind) {
-      case 'start':
-        return `Rain hisses on the neon of ${e.district}. Far below the streets, ${e.wyrmName}, a ${e.breedTitle}, stirs in its sleep, and every screen in the city flickers. You descend.`;
-      case 'slay':
-        return pick([
-          `The ${e.foe.replace(/^The /, '')} comes apart in a shower of dead pixels. Somewhere below, the Devourer flinches.`,
-          `It shrieks once in corrupted audio and is gone. One more seal burns into the dark.`,
-          `What is left of it drips through the floor as harmless static. The way down is open.`,
-        ]);
-      case 'end':
-        return e.win
-          ? `The seals close. ${e.wyrmName} sinks back into its long sleep, and above you a whole city wakes up, never knowing how close it came.`
-          : `The last light goes out. ${e.wyrmName} rises through the net, and one by one, the windows of Neo-Avalon go dark.`;
-    }
+export class SilentNarrator implements Narrator {
+  readonly label = 'none';
+  async narrate(): Promise<string | null> {
+    return null;
   }
 }
 
 const SYSTEM = [
-  'You narrate LAST LIGHT, a cyberpunk-fantasy horror game: a crew of small mythical spirits descends through the haunted net beneath the neon city of Neo-Avalon to seal the Devourer, an ancient AI wyrm whose waking would darken every mind in the city.',
-  'Narrate the given moment to the party in one or two vivid sentences, under 40 words, second person plural, present tense.',
-  'Mix cyberpunk and high-fantasy imagery. No markdown, no emoji, no dialogue for the players, no game advice.',
+  'You are the game master of LAST LIGHT, a co-op cyberpunk-fantasy story: small mythical spirits journey beneath the neon city of Neo-Avalon to stop a waking AI wyrm, the Devourer.',
+  'Given the chapter the crew is entering and the choice they just made, add ONE short aside as a game master would: wry, ominous or warm, under 30 words, second person plural.',
+  'React to their choice if there was one. Do not repeat the chapter title. No markdown, no emoji, no game advice.',
 ].join('\n');
 
 export class AiNarrator implements Narrator {
-  constructor(
-    private readonly ai: Ai,
-    private readonly fallback: Narrator = new ScriptedNarrator(),
-  ) {}
+  constructor(private readonly ai: Ai) {}
 
   get label() {
     return this.ai.label;
   }
 
-  async narrate(e: NarrationEvent): Promise<string> {
+  async narrate(e: NarrationEvent): Promise<string | null> {
     try {
-      const text = await this.ai.complete(SYSTEM, [{ role: 'user', content: JSON.stringify(e) }], { maxTokens: 90, timeoutMs: 6000 });
-      return text.replace(/\s+/g, ' ').slice(0, 320);
+      const text = await this.ai.complete(SYSTEM, [{ role: 'user', content: JSON.stringify(e) }], { maxTokens: 80, timeoutMs: 6000 });
+      return text.replace(/\s+/g, ' ').slice(0, 240);
     } catch (err) {
-      console.warn(`[narrator] falling back: ${(err as Error).message}`);
-      return this.fallback.narrate(e);
+      console.warn(`[narrator] skipped: ${(err as Error).message}`);
+      return null;
     }
   }
 }
 
 export function createNarrator(ai: Ai | null): Narrator {
-  return ai ? new AiNarrator(ai) : new ScriptedNarrator();
+  return ai ? new AiNarrator(ai) : new SilentNarrator();
 }

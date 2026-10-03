@@ -1,17 +1,19 @@
 import { randomInt } from 'node:crypto';
-import type { ActionButton, Fx, HudState, SceneState } from '../shared/protocol.js';
+import type { ActionButton, FeedItem, Fx, HudState, ModeId, SceneState } from '../shared/protocol.js';
 import { c } from './ansi.js';
 import { Game, type GamePlayer } from './game/game.js';
-import type { ParleyJudge } from './game/parley.js';
 import type { Narrator } from './game/narrator.js';
+import type { ParleyJudge } from './game/parley.js';
+import { STORIES } from './game/story.js';
 
-/** A connected terminal, independent of transport (WebSocket today, SSH later). */
+/** A connected client, independent of transport. */
 export interface Session {
   readonly id: string;
   send(text: string): void;
   setPrompt(text: string): void;
   hud(hud: HudState): void;
   scene(scene: SceneState, actions: ActionButton[]): void;
+  feed(item: FeedItem): void;
   fx(fx: Fx): void;
   clear(): void;
   close(): void;
@@ -42,8 +44,14 @@ class Player implements GamePlayer {
   setScene(scene: SceneState, actions: ActionButton[]) {
     this.session.scene(scene, actions);
   }
+  feed(item: FeedItem) {
+    this.session.feed(item);
+  }
   fx(fx: Fx) {
     this.session.fx(fx);
+  }
+  get member() {
+    return { handle: this.handle, avatar: this.avatar, classes: [] };
   }
 }
 
@@ -51,12 +59,14 @@ interface Room {
   code: string;
   host: Player;
   players: Player[];
+  story: ModeId;
   game?: Game;
 }
 
 export const MAX_PLAYERS = 4;
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const HANDLE_RE = /^[A-Za-z0-9_-]{2,16}$/;
+const MODES = Object.keys(STORIES) as ModeId[];
 
 export interface HubOptions {
   judge: ParleyJudge;
@@ -79,18 +89,11 @@ export class Hub {
   connect(session: Session) {
     const p = new Player(session);
     this.players.set(session.id, p);
-    p.send(
-      [
-        c.bold(c.yellow('LAST LIGHT')) + c.dim(' · a co-op descent for 2-4 players · Neo-Avalon, 2077'),
-        '',
-        c.italic('Beneath the neon city of Neo-Avalon, something ancient is waking: the Devourer.'),
-        c.italic('When it wakes, every mind in the city goes dark. A few small spirits of the net stand in its way.'),
-        c.italic('You are the last light.'),
-        '',
-        'pick a handle, choom.',
-      ].join('\n'),
-    );
-    p.setPrompt(c.cyan('handle> '));
+    p.send(c.bold(c.yellow('LAST LIGHT')) + c.dim(' · a co-op story for 2-4 players · type help for commands'));
+    p.feed({ kind: 'story', speaker: '', text: 'Beneath the neon city of Neo-Avalon, something ancient is waking.', portrait: { type: 'narrator' } });
+    p.feed({ kind: 'story', speaker: '', text: 'A few small spirits of the net stand in its way. You are one of them.', portrait: { type: 'narrator' } });
+    p.feed({ kind: 'tip', text: 'Type a name below to begin.' });
+    p.setPrompt(c.cyan('name> '));
   }
 
   disconnect(sessionId: string) {
@@ -105,10 +108,8 @@ export class Hub {
     if (!p) return;
     const text = line.trim();
     if (p.state === 'naming') return this.pickHandle(p, text);
-
     const [head = '', ...rest] = text.split(/\s+/);
     const cmd = head.toLowerCase();
-
     if (cmd === 'clear') return p.session.clear();
     if (p.state === 'room' && p.room?.game) {
       if (cmd === 'leave') return this.leaveRoom(p);
@@ -119,13 +120,14 @@ export class Hub {
     return this.roomCommand(p, cmd, text, rest);
   }
 
-  // ---------------------------------------------------------------- lobby
+  // ---------------------------------------------------------------- street
 
   private pickHandle(p: Player, text: string) {
-    if (!HANDLE_RE.test(text)) return p.send(c.dim('2-16 characters: letters, numbers, - or _'));
+    if (!HANDLE_RE.test(text)) return p.feed({ kind: 'tip', text: 'Names are 2-16 letters, numbers, - or _.' });
     p.handle = text;
     p.state = 'lobby';
-    p.send(`welcome to the net, ${c.bold(text)}.\n${this.lobbyHelp()}`);
+    p.feed({ kind: 'tip', text: `Welcome, ${text}. Create a safehouse for your crew, or join one with its code.` });
+    p.send(`welcome, ${c.bold(text)}. commands: create · join <code> · reroll`);
     p.setPrompt(`${c.magenta(p.handle)}> `);
     p.setHud({ mode: 'street', handle: p.handle, avatar: p.avatar });
   }
@@ -141,17 +143,10 @@ export class Hub {
       q.setHud({
         mode: 'safehouse',
         code: room.code,
+        story: room.story,
         party: room.players.map((r) => ({ handle: r.handle, avatar: r.avatar, classes: [], you: r === q, host: r === room.host })),
       });
     }
-  }
-
-  private lobbyHelp() {
-    return [
-      `  ${c.cyan('create'.padEnd(12))}${c.dim('open a safehouse and get a room code')}`,
-      `  ${c.cyan('join <code>'.padEnd(12))}${c.dim('join your crew')}`,
-      `  ${c.cyan('reroll'.padEnd(12))}${c.dim('grow a new avatar')}`,
-    ].join('\n');
   }
 
   private lobbyCommand(p: Player, cmd: string, rest: string[]) {
@@ -162,10 +157,8 @@ export class Hub {
         return this.joinRoom(p, (rest[0] ?? '').toUpperCase());
       case 'reroll':
         return this.reroll(p);
-      case 'help':
-        return p.send(this.lobbyHelp());
       default:
-        return p.send(c.dim(`unknown command. ${this.lobbyHelp().trimStart()}`));
+        return p.feed({ kind: 'tip', text: 'Create a safehouse, or join one with its 4-letter code.' });
     }
   }
 
@@ -177,88 +170,87 @@ export class Hub {
   }
 
   private createRoom(p: Player) {
-    const room: Room = { code: this.newCode(), host: p, players: [] };
+    const room: Room = { code: this.newCode(), host: p, players: [], story: 'adventure' };
     this.rooms.set(room.code, room);
     this.enterRoom(p, room);
-    p.send(`safehouse ${c.bold(c.yellow(room.code))} is open. send the code to your crew. they join with: join ${room.code}`);
+    p.send(`safehouse ${c.bold(c.yellow(room.code))} is open. your crew joins with: join ${room.code}`);
+    p.feed({ kind: 'tip', text: `Your safehouse code is ${room.code}. Send it to your crew, pick a story, then begin.` });
   }
 
   private joinRoom(p: Player, code: string) {
     const room = this.rooms.get(code);
-    if (!code) return p.send(c.dim('usage: join <code>'));
-    if (!room) return p.send(c.red(`no safehouse called ${code}.`));
-    if (room.game) return p.send(c.red(`${code} is mid-descent. wait for them to finish.`));
-    if (room.players.length >= MAX_PLAYERS) return p.send(c.red(`${code} is full (${MAX_PLAYERS} max).`));
-    if (room.players.some((q) => q.handle.toLowerCase() === p.handle.toLowerCase())) {
-      return p.send(c.red(`someone in ${code} already goes by ${p.handle}. reconnect with another handle.`));
-    }
+    const no = (text: string) => p.feed({ kind: 'notice', text, tone: 'bad' });
+    if (!code) return p.feed({ kind: 'tip', text: 'Type join and the 4-letter code.' });
+    if (!room) return no(`No safehouse called ${code}.`);
+    if (room.game) return no(`${code} is mid-story. Wait for them to finish.`);
+    if (room.players.length >= MAX_PLAYERS) return no(`${code} is full.`);
+    if (room.players.some((q) => q.handle.toLowerCase() === p.handle.toLowerCase())) return no(`Someone in ${code} already goes by ${p.handle}.`);
     this.enterRoom(p, room);
   }
+
+  // ---------------------------------------------------------------- safehouse
 
   private enterRoom(p: Player, room: Room) {
     room.players.push(p);
     p.room = room;
     p.state = 'room';
-    this.toRoom(room, c.magenta(`>> ${p.handle} entered the safehouse (${room.players.length}/${MAX_PLAYERS})`));
-    p.send(this.roomHelp(room, p));
-    p.setPrompt(this.roomPrompt(p));
+    this.toRoom(room, { kind: 'notice', text: `${p.handle} entered the safehouse (${room.players.length}/${MAX_PLAYERS})`, tone: 'info' });
+    p.setPrompt(`${c.magenta(p.handle)}@${c.yellow(room.code)}> `);
     this.pushSafehouseHud(room);
-  }
-
-  // ---------------------------------------------------------------- room
-
-  private roomPrompt(p: Player) {
-    return `${c.magenta(p.handle)}@${c.yellow(p.room?.code ?? '')}> `;
-  }
-
-  private roomHelp(room: Room, p: Player) {
-    const lines = [
-      `  ${c.cyan('say <msg>'.padEnd(12))}${c.dim('chat with the crew')}`,
-      `  ${c.cyan('who'.padEnd(12))}${c.dim('who is here')}`,
-      `  ${c.cyan('leave'.padEnd(12))}${c.dim('back to the lobby')}`,
-    ];
-    if (room.host === p) lines.unshift(`  ${c.cyan('start'.padEnd(12))}${c.dim(`begin the descent (needs ${this.minPlayers}+ players)`)}`);
-    return lines.join('\n');
   }
 
   private roomCommand(p: Player, cmd: string, text: string, rest: string[]) {
     const room = p.room!;
-    if (text.startsWith("'") || text.startsWith('"')) return this.toRoom(room, `${c.magenta(`[${p.handle}]`)} ${text.slice(1).trim()}`);
     switch (cmd) {
-      case 'say':
-        return rest.length ? this.toRoom(room, `${c.magenta(`[${p.handle}]`)} ${rest.join(' ')}`) : undefined;
-      case 'who':
-        return p.send(room.players.map((q) => `  ${q.handle}${q === room.host ? c.dim(' (host)') : ''}`).join('\n'));
       case 'leave':
         return this.leaveRoom(p);
       case 'start':
         return this.startGame(p, room);
       case 'reroll':
         return this.reroll(p);
-      case 'help':
-        return p.send(this.roomHelp(room, p));
+      case 'mode':
+      case 'story':
+        return this.setStory(p, room, (rest[0] ?? '').toLowerCase());
+      case 'say':
+        return this.chat(room, p, rest.join(' '));
       default:
-        return this.toRoom(room, `${c.magenta(`[${p.handle}]`)} ${text}`);
+        return this.chat(room, p, text.replace(/^'/, ''));
     }
   }
 
+  private chat(room: Room, p: Player, text: string) {
+    if (!text.trim()) return;
+    this.toRoom(room, { kind: 'chat', from: p.member, text: text.trim() });
+    for (const q of room.players) q.send(`${c.magenta(`[${p.handle}]`)} ${text.trim()}`);
+  }
+
+  private setStory(p: Player, room: Room, mode: string) {
+    if (room.host !== p) return p.feed({ kind: 'tip', text: `Only the host (${room.host.handle}) picks the story.` });
+    const m = MODES.find((x) => x === mode);
+    if (!m) return p.feed({ kind: 'tip', text: `Stories: ${MODES.join(', ')}` });
+    room.story = m;
+    this.toRoom(room, { kind: 'notice', text: `Story: ${STORIES[m].title} — ${STORIES[m].pitch}`, tone: 'info' });
+    this.pushSafehouseHud(room);
+  }
+
   private startGame(p: Player, room: Room) {
-    if (room.host !== p) return p.send(c.dim(`only the host (${room.host.handle}) can start.`));
-    if (room.players.length < this.minPlayers) {
-      return p.send(c.red(`you need at least ${this.minPlayers} netrunners. share the code: ${room.code}`));
-    }
-    this.toRoom(room, c.cyan('\n>> jacking in...'));
+    if (room.host !== p) return p.feed({ kind: 'tip', text: `Only the host (${room.host.handle}) can begin.` });
+    if (room.players.length < this.minPlayers) return p.feed({ kind: 'tip', text: `You need at least ${this.minPlayers} players. Share the code: ${room.code}` });
     room.game = new Game(room.players, {
       judge: this.opts.judge,
-      narrator: this.opts.narrator,
+      story: room.story,
       code: room.code,
-      roundMs: this.opts.roundMs,
-      voteMs: this.opts.voteMs,
+      ...(this.opts.narrator ? { narrator: this.opts.narrator } : {}),
+      ...(this.opts.roundMs !== undefined ? { roundMs: this.opts.roundMs } : {}),
+      ...(this.opts.voteMs !== undefined ? { voteMs: this.opts.voteMs } : {}),
       onEnd: () => {
         room.game = undefined;
-        for (const q of room.players) q.setPrompt(this.roomPrompt(q));
-        this.toRoom(room, c.dim(`back in the safehouse. ${room.host.handle} can start another descent.`));
-        setTimeout(() => this.pushSafehouseHud(room), 4000);
+        for (const q of room.players) q.setPrompt(`${c.magenta(q.handle)}@${c.yellow(room.code)}> `);
+        setTimeout(() => {
+          if (room.game) return;
+          this.toRoom(room, { kind: 'tip', text: `Back in the safehouse. ${room.host.handle} can begin another story.` });
+          this.pushSafehouseHud(room);
+        }, 9000);
       },
     });
   }
@@ -269,28 +261,22 @@ export class Hub {
     room.players = room.players.filter((q) => q !== p);
     room.game?.removePlayer(p.id);
     p.room = undefined;
-
     if (room.players.length === 0) {
       room.game?.dispose();
       this.rooms.delete(room.code);
     } else {
       if (room.host === p) room.host = room.players[0]!;
-      this.toRoom(room, c.magenta(`>> ${p.handle} ${disconnected ? 'lost connection' : 'left'}. host is ${room.host.handle}.`));
-      if (room.game && room.players.length < this.minPlayers) {
-        this.toRoom(room, c.dim('(not enough crew left to finish properly, but you can try.)'));
-      }
+      this.toRoom(room, { kind: 'notice', text: `${p.handle} ${disconnected ? 'lost connection' : 'left'}. ${room.host.handle} is host.`, tone: 'info' });
       if (!room.game) this.pushSafehouseHud(room);
     }
-
     if (!disconnected) {
       p.state = 'lobby';
-      p.send(`back on the street.\n${this.lobbyHelp()}`);
       p.setPrompt(`${c.magenta(p.handle)}> `);
       p.setHud({ mode: 'street', handle: p.handle, avatar: p.avatar });
     }
   }
 
-  private toRoom(room: Room, text: string) {
-    for (const q of room.players) q.send(text);
+  private toRoom(room: Room, item: FeedItem) {
+    for (const q of room.players) q.feed(item);
   }
 }
