@@ -155,12 +155,13 @@ export class GameConsole {
     el.className = `toast ${tone}`;
     el.textContent = text;
     this.toasts.append(el);
-    while (this.toasts.children.length > 4) this.toasts.firstElementChild?.remove();
+    const max = window.innerWidth < 600 ? 2 : 4;
+    while (this.toasts.children.length > max) this.toasts.firstElementChild?.remove();
     requestAnimationFrame(() => el.classList.add('show'));
     setTimeout(() => {
       el.classList.remove('show');
       setTimeout(() => el.remove(), 400);
-    }, 4200);
+    }, 3200);
   }
 
   private chat(from: { handle: string; avatar: number; classes: string[] }, text: string) {

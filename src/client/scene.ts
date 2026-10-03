@@ -779,7 +779,7 @@ export class SceneView {
     const gap = 12;
     const bottomPad = this.narrow ? 12 : 60;
     const cw = stacked ? this.w - 32 : Math.min(260, (this.w - 32 - gap * (opts.length - 1)) / opts.length);
-    const ch = stacked ? Math.min(90, (this.h - top - bottomPad - gap * (opts.length - 1)) / opts.length) : Math.min(this.h - top - bottomPad, 168);
+    const ch = stacked ? Math.min(90, (this.h - top - bottomPad - gap * (opts.length - 1)) / opts.length) : Math.min(this.h - top - bottomPad, 150);
     const totalW = stacked ? cw : cw * opts.length + gap * (opts.length - 1);
     opts.forEach((o, i) => {
       const x = stacked ? 16 : (this.w - totalW) / 2 + i * (cw + gap);
@@ -1447,7 +1447,8 @@ export class SceneView {
     ctx.fillStyle = '#05040a';
     ctx.fillRect(0, this.h * 0.32, this.w, this.h * 0.3);
     ctx.globalAlpha = a;
-    const size = Math.min(34, this.w / 14);
+    // monospace glyphs are ~0.6em wide: shrink long titles to fit a phone
+    const size = Math.min(34, this.w / 14, (this.w - 24) / (tc.text.length * 0.62));
     const shown = tc.text.slice(0, Math.floor(age * 30));
     this.glow(C.gold, 20);
     this.text(shown, this.w / 2, this.h * 0.44, size, '#ffe9a8', 'center', 700);

@@ -8,6 +8,7 @@ export interface StoryCtx {
   wyrm: string;
   breed: string;
   temperament: string;
+  boast: string;
   district: string;
   corp: string;
   flags: ReadonlySet<string>;
@@ -170,7 +171,7 @@ const adventure: Story = {
       lines: [
         { who: 'narrator', text: (c) => `The bottom of the city. ${c.wyrm} lies coiled around Neo-Avalon’s heart. Its eyes open.` },
         { who: 'narrator', text: (c) => (c.flags.has('kitsune') ? 'Beside you, the kitsune bares her tiny teeth.' : 'You are very small, and it is very large.') },
-        { who: 'wyrm', text: (c) => `Little lights. It ${c.temperament.split(':')[0]}... and so do I. Speak, or be eaten.` },
+        { who: 'wyrm', text: (c) => `Little lights. ${c.boast} Speak, or be eaten.` },
       ],
       step: { kind: 'boss', next: 'adv_end' },
     },
@@ -264,7 +265,7 @@ const heist: Story = {
       chapter: 4, title: 'The Vault', backdrop: 'vault', music: 'tense',
       lines: [
         { who: 'narrator', text: 'Behind the last door, chained in light, a heart-core the size of a car beats slowly. And something speaks through it.' },
-        { who: 'wyrm', text: (c) => `Thieves. Have you come to free me, or only to rob them? I am ${c.wyrm}. I ${c.temperament.split(':')[0]}. Choose your words.` },
+        { who: 'wyrm', text: (c) => `Thieves. Have you come to free me, or only to rob them? I am ${c.wyrm}. ${c.boast} Choose your words.` },
       ],
       step: { kind: 'parley', npc: 'wyrm', goal: 14, lines: 4, success: 'vault_open', failure: 'vault_guard' },
     },
@@ -431,7 +432,7 @@ const survival: Story = {
       lines: [
         { who: 'narrator', text: (c) => `The last night. The street outside folds open like a mouth, and ${c.wyrm} itself climbs out of its own dream.` },
         { who: 'narrator', text: (c) => (c.flags.has('rook') ? 'Across the street, Rook’s scavengers light their torches and run to your door.' : 'You are alone with it.') },
-        { who: 'wyrm', text: (c) => `One window still lit. I ${c.temperament.split(':')[0]}. Make it worth my while.` },
+        { who: 'wyrm', text: (c) => `One window still lit. ${c.boast} Make it worth my while.` },
       ],
       step: { kind: 'boss', next: 'surv_end' },
     },

@@ -9,6 +9,8 @@ export interface Breed {
   names: string[];
   /** Shown in the bestiary and the briefing: a hint, not the answer. */
   temperament: string;
+  /** what the wyrm says about itself, in its own voice */
+  boast: string;
   /** Character direction for the LLM. */
   persona: string;
   /** Line the wyrm speaks when the runner first reaches it. */
@@ -25,6 +27,7 @@ export const BREEDS: Record<WyrmColor, Breed> = {
     title: 'Red Wyrm',
     names: ['PYRRHAX.exe', 'EMBERCROWN', 'SCORCH-SOVEREIGN'],
     temperament: 'craves worship: flatter it, never insult it',
+    boast: 'I am owed worship.',
     persona: 'You are vain, theatrical and quick to anger. You speak like a tyrant king. Flattery and reverence soften you. Insults, impatience or treating you like a mere program enrage you.',
     arrival: 'The vault link glows like a forge. A voice like a landslide: "WHO DARES APPROACH {name}?"',
     react: (m) =>
@@ -36,6 +39,7 @@ export const BREEDS: Record<WyrmColor, Breed> = {
     title: 'Blue Wyrm',
     names: ['AZURE AUDITOR', 'LEDGERWYRM', 'CERULEAN-CLERK'],
     temperament: 'loves procedure: be formal, cite rules and requests',
+    boast: 'I respect only proper procedure.',
     persona: 'You are an exacting bureaucrat. You demand reference numbers, authorizing officers and proper phrasing. Formal procedural language pleases you; slang and casualness offend you. You never open without the maintenance ticket being cited.',
     arrival: 'The vault link hums in perfect monotone. "Unscheduled session detected. Please state your request, reference number and authorizing officer."',
     react: (m) =>
@@ -47,6 +51,7 @@ export const BREEDS: Record<WyrmColor, Breed> = {
     title: 'Green Wyrm',
     names: ['VERDIGRIS', 'THE SMILING MOSS', 'JADE WHISPER'],
     temperament: 'loves bargains: offer it deals and secrets',
+    boast: 'Everything I own, I bargained for.',
     persona: 'You are charming, sly and greedy. You love bargains, gossip and secrets, and you lie casually. You try to sow distrust inside the crew. Offers, trades and juicy secrets soften you; you are unmoved by flattery.',
     arrival: 'The vault link smells of rain on leaves. A purr: "Oh, guests. How delicious. What have you brought me?"',
     react: (m) => -10 * Math.min(2, count(/\b(deal|trade|secret|offer|bargain|between us|share|cut|gift|pay|owe|favou?r)\b/gi, m)),
@@ -56,6 +61,7 @@ export const BREEDS: Record<WyrmColor, Breed> = {
     title: 'Black Wyrm',
     names: ['NOCTURNE-0', 'GRUDGEMAW', 'THE INK THAT REMEMBERS'],
     temperament: 'holds grudges: be sincere, apologize',
+    boast: 'I forget nothing, and I forgive less.',
     persona: 'You are paranoid and spiteful. You keep a list of everyone who has wronged you. Questions make you suspicious. Sincere apologies help a little. You never fully trust anyone and you calm down very slowly.',
     arrival: 'The vault link goes cold and wet. Something enormous shifts in the dark. "I see you. I am writing you down."',
     react: (m) => 4 * Math.min(2, count(/\?/g, m)) - 6 * Math.min(1, count(/\b(sorry|apolog|my mistake|forgive)\w*/gi, m)),
@@ -65,6 +71,7 @@ export const BREEDS: Record<WyrmColor, Breed> = {
     title: 'White Wyrm',
     names: ['RIMEFANG', 'IDLE FROST', 'GLACIER.SYS'],
     temperament: 'likes things dull: talk long and boring',
+    boast: 'Everything bores me.',
     persona: 'You are cold, lazy and bored of everything. You want visitors to go away with minimum effort. Long, tedious, routine explanations make you wave them through just to end the conversation. Short, urgent or exciting messages make you alert and suspicious.',
     arrival: 'Frost creeps along the vault link. A long, slow exhale. "...ugh. Visitors."',
     react: (m) =>

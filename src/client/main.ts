@@ -242,15 +242,19 @@ function renderActions() {
   for (const a of list) {
     if (a.group !== groupName || !group) {
       groupName = a.group;
-      group = document.createElement('div');
-      group.className = 'act-group';
+      const box = document.createElement('div');
+      box.className = 'act-group';
       if (a.group) {
+        box.dataset.group = a.group;
         const label = document.createElement('span');
         label.className = 'act-label';
         label.textContent = a.group;
-        group.append(label);
+        box.append(label);
       }
-      actionsEl.append(group);
+      group = document.createElement('div');
+      group.className = 'act-row';
+      box.append(group);
+      actionsEl.append(box);
     }
     const b = document.createElement('button');
     b.className = `act tone-${a.tone ?? 'info'}`;

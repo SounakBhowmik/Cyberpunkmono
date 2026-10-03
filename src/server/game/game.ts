@@ -167,7 +167,7 @@ export class Game {
   }
 
   private ctx(): StoryCtx {
-    return { wyrm: this.wyrmName, breed: this.breed.title, temperament: this.breed.temperament, district: this.district, corp: this.corp, flags: this.flags };
+    return { wyrm: this.wyrmName, breed: this.breed.title, temperament: this.breed.temperament, boast: this.breed.boast, district: this.district, corp: this.corp, flags: this.flags };
   }
 
   private wyrmInfo(): WyrmInfo {
@@ -606,7 +606,7 @@ export class Game {
   private startParley(npc: string, goal: number, lines: number, success: string, failure: string) {
     this.phase = 'parley';
     this.parley = { npc, ctx: this.npcContext(npc), goal, progress: 0, linesLeft: lines, history: [], busy: false, success, failure };
-    this.feedAll({ kind: 'tip', text: `Win over ${this.parley.ctx.name} in ${lines} lines: ${this.parley.ctx.name} ${this.parley.ctx.temperament}. Anyone can speak.` });
+    this.feedAll({ kind: 'tip', text: `${this.parley.ctx.name} ${this.parley.ctx.temperament}. Win them over in ${lines} lines; anyone can speak.` });
     this.refresh();
   }
 

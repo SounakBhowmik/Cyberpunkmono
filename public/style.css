@@ -286,17 +286,15 @@ header, #hud, #actions, #cmdbar { flex-shrink: 0; }
 #actions { align-items: stretch; }
 .act-group {
   display: flex;
+  flex-direction: column;
   gap: 6px;
-  align-items: stretch;
-  flex-wrap: wrap;
-  align-content: flex-start;
   padding-right: 10px;
   margin-right: 4px;
   border-right: 1px solid rgba(215, 227, 255, 0.1);
 }
 .act-group:last-child { border-right: none; }
+.act-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: stretch; }
 .act-label {
-  flex-basis: 100%;
   font-size: 10px;
   letter-spacing: 0.15em;
   text-transform: uppercase;
@@ -312,6 +310,12 @@ header, #hud, #actions, #cmdbar { flex-shrink: 0; }
 @media (max-width: 600px) {
   .act { max-width: 170px; }
   .act small { font-size: 9px; }
+  .act-group { flex: 0 0 auto; }
+  .act-row { flex-wrap: nowrap; }
+  /* call-outs are one tap each: on a phone the label says enough */
+  .act-group[data-group^="call out"] small { display: none; }
+  .act-group[data-group^="call out"] .act { min-height: 34px; padding: 6px 10px; }
+  .tip { font-size: 11px; padding: 5px 10px; }
 }
 
 /* ------------------------------------------------------------ the game console (story on screen) */
@@ -380,7 +384,7 @@ body.log-open #terminal { display: block; flex: 0 0 22vh; min-height: 120px; }
 .dialogue.show ~ .tip { bottom: 104px; }
 .tip.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; cursor: pointer; }
 
-.toasts { position: absolute; top: 52px; right: 10px; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; max-width: 46%; }
+.toasts { position: absolute; top: 48px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; max-width: min(420px, 60%); pointer-events: none; }
 .toast {
   padding: 5px 10px;
   border-radius: 4px;
@@ -389,7 +393,7 @@ body.log-open #terminal { display: block; flex: 0 0 22vh; min-height: 120px; }
   color: #d7e3ff;
   font-size: 12px;
   opacity: 0;
-  transform: translateX(12px);
+  transform: translateY(-6px);
   transition: opacity 0.3s ease, transform 0.3s ease;
 }
 .toast.show { opacity: 1; transform: none; }
@@ -420,7 +424,7 @@ body.log-open #terminal { display: block; flex: 0 0 22vh; min-height: 120px; }
   .dialogue { left: 8px; right: 8px; bottom: 8px; padding: 8px 10px; }
   .dialogue .portrait { width: 40px; height: 40px; }
   .dialogue .line { font-size: 12px; min-height: 2.6em; }
-  .toasts { top: 8px; max-width: 70%; }
+  .toasts { top: 8px; max-width: 80%; }
   .dialogue.show ~ .tip { bottom: 84px; }
   .chats { top: 44px; max-width: 80%; }
   body.log-open #terminal { flex-basis: 18dvh; }
