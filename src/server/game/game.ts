@@ -340,7 +340,7 @@ export class Game {
       }
       case 'parley': {
         const pl = this.parley!;
-        return [{ label: `Speak to ${pl.ctx.name}`, cmd: 'speak ', input: true, tone: 'talk', hint: `they ${pl.ctx.temperament}`, group: `${pl.linesLeft} line${pl.linesLeft === 1 ? '' : 's'} left`, disabled: pl.busy }];
+        return [{ label: `Speak to ${pl.ctx.name}`, cmd: 'speak ', input: true, tone: 'talk', hint: pl.ctx.temperament, group: `${pl.linesLeft} line${pl.linesLeft === 1 ? '' : 's'} left`, disabled: pl.busy }];
       }
       case 'combat':
       case 'boss': {
@@ -416,7 +416,7 @@ export class Game {
       story: 'the story is unfolding.',
       choice: 'vote for an option. most votes wins; ties are settled by fate.',
       puzzle: 'the Mage sees the glyph order and shows it; the Rogue presses the glyphs in order. three mistakes trip the alarm.',
-      parley: 'speak <words>. win them over before your lines run out. they ' + (this.parley?.ctx.temperament ?? ''),
+      parley: 'speak <words>. win them over before your lines run out. ' + (this.parley ? `${this.parley.ctx.name} ${this.parley.ctx.temperament}` : ''),
       combat: 'only the Mage sees the foe’s next move: they call it out. Ward blocks attacks (limited), Hex breaks charges and makes the Rogue hit double, Bolt pierces shells, Mend heals.',
       boss: 'as in any fight, but anyone may speak <words> to the wyrm instead of a move. it ' + this.breed.temperament,
       ended: '',
@@ -606,7 +606,7 @@ export class Game {
   private startParley(npc: string, goal: number, lines: number, success: string, failure: string) {
     this.phase = 'parley';
     this.parley = { npc, ctx: this.npcContext(npc), goal, progress: 0, linesLeft: lines, history: [], busy: false, success, failure };
-    this.feedAll({ kind: 'tip', text: `Win over ${this.parley.ctx.name} in ${lines} lines. They ${this.parley.ctx.temperament}. Anyone can speak.` });
+    this.feedAll({ kind: 'tip', text: `Win over ${this.parley.ctx.name} in ${lines} lines: ${this.parley.ctx.name} ${this.parley.ctx.temperament}. Anyone can speak.` });
     this.refresh();
   }
 
