@@ -2,9 +2,15 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import { MAX_LINE_LENGTH, type ActionButton, type ClientMessage, type HudState, type RollView, type SceneRoom, type SceneState, type ServerMessage } from '../shared/protocol';
 import { SceneView } from './scene';
+import { Sound, type Ambience } from './sound';
+
+/** Phones and tablets type into a real input box; desktops type straight into the terminal. */
+const touch = window.matchMedia('(pointer: coarse)').matches;
+const sound = new Sound();
 
 const term = new Terminal({
-  cursorBlink: true,
+  cursorBlink: !touch,
+  disableStdin: touch,
   fontFamily: '"JetBrains Mono", "Fira Code", Menlo, Consolas, monospace',
   fontSize: window.innerWidth < 600 ? 11 : 13,
   theme: {
@@ -32,7 +38,7 @@ await Promise.race([document.fonts.load('15px "JetBrains Mono"'), new Promise((r
 term.open(document.getElementById('terminal')!);
 fit.fit();
 new ResizeObserver(() => fit.fit()).observe(document.getElementById('terminal')!);
-term.focus();
+if (!touch) term.focus();
 
 // ---------------------------------------------------------------- line editor
 // The server sends finished lines and a prompt; we own the input line and
@@ -150,6 +156,7 @@ let lastActions: ActionButton[] = [];
 const scene = new SceneView(document.getElementById('scene') as HTMLCanvasElement, (room, sc) => clickRoom(room, sc));
 
 async function animateRoll(roll: RollView) {
+  sound.dice(roll.outcome);
   animating = true;
   await scene.rollDie(roll);
   animating = false;
@@ -158,6 +165,12 @@ async function animateRoll(roll: RollView) {
 
 /** Put a command in the editor for the player to finish (e.g. a port number). */
 function prefill(cmd: string) {
+  if (touch) {
+    cmdInput.value = cmd;
+    cmdInput.focus();
+    cmdInput.setSelectionRange(cmd.length, cmd.length);
+    return;
+  }
   buffer = cmd;
   cursor = buffer.length;
   redraw();
@@ -170,8 +183,38 @@ function run(cmd: string) {
   buffer = '';
   cursor = 0;
   send({ type: 'line', text: cmd });
-  term.focus();
+  if (!touch) term.focus();
 }
+
+// ---------------------------------------------------------------- touch input bar
+
+const cmdForm = document.getElementById('cmdbar') as HTMLFormElement;
+const cmdInput = document.getElementById('cmd') as HTMLInputElement;
+cmdForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const line = cmdInput.value;
+  cmdInput.value = '';
+  sound.unlock();
+  run(line);
+});
+
+// ---------------------------------------------------------------- sound
+
+const soundBtn = document.getElementById('sound') as HTMLButtonElement;
+function renderSoundBtn() {
+  soundBtn.textContent = sound.enabled ? '♪ sound on' : '♪ sound off';
+  soundBtn.setAttribute('aria-pressed', String(sound.enabled));
+}
+soundBtn.onclick = () => {
+  sound.setEnabled(!sound.enabled);
+  renderSoundBtn();
+};
+renderSoundBtn();
+for (const ev of ['pointerdown', 'keydown'] as const) document.addEventListener(ev, () => sound.unlock(), { passive: true });
+
+const FX_SOUND: Partial<Record<string, Parameters<Sound['play']>[0]>> = {
+  move: 'move', unlock: 'unlock', alarm: 'alarm', hurt: 'hurt', heal: 'heal', strike: 'strike', slay: 'slay', loot: 'loot', intro: 'intro',
+};
 
 function clickRoom(room: SceneRoom, sc: SceneState) {
   const me = sc.party.find((m) => m.you);
@@ -191,6 +234,7 @@ function renderActions() {
     map.textContent = scene.mapForced ? '◫ back to scene' : '◫ map';
     map.title = 'toggle the dungeon map';
     map.onclick = () => {
+      sound.play('click');
       scene.toggleMap();
       renderActions();
     };
@@ -202,7 +246,11 @@ function renderActions() {
     b.textContent = a.input ? `${a.label} …` : a.label;
     b.disabled = !!a.disabled;
     if (a.hint) b.title = a.hint;
-    b.onclick = () => (a.input ? prefill(a.cmd) : run(a.cmd));
+    b.onclick = () => {
+      sound.play('click');
+      if (a.input) prefill(a.cmd);
+      else run(a.cmd);
+    };
     actionsEl.append(b);
   }
   if (!actionsEl.children.length) {
@@ -250,14 +298,14 @@ function renderHud(h: HudState) {
     : '';
   hudEl.innerHTML = `
     <div class="row">
-      ${chip(esc(h.code), 'tag')}<b class="corp">${esc(h.corp)}</b><span class="muted">${esc(h.district)} · runner @ ${esc(h.location)}</span>
-      <span class="wyrm ${h.wyrm.color}">${esc(h.wyrm.name)} <i>${esc(h.wyrm.title)}</i></span>
+      ${chip(esc(h.code), 'tag')}<b class="corp">${esc(h.corp)}</b><span class="muted wide-only">${esc(h.district)} · runner @ ${esc(h.location)}</span>
+      <span class="wyrm ${h.wyrm.color}">${esc(h.wyrm.name)} <i class="wide-only">${esc(h.wyrm.title)}</i></span>
     </div>
     <div class="row">
       <span class="label">TRACE</span>${bar(h.trace, 100, traceCls)}<span class="${traceCls}">${h.trace}%</span>
       <span class="sep"></span>${party}
     </div>
-    <div class="row"><span class="label">DECK</span>${deck}${h.lastRoll ? `<span class="roll" title="last roll">${esc(h.lastRoll)}</span>` : ''}</div>
+    <div class="row deck${h.deck.length ? '' : ' empty'}"><span class="label">DECK</span>${deck}${h.lastRoll ? `<span class="roll" title="last roll">${esc(h.lastRoll)}</span>` : ''}</div>
     ${enc}`;
 }
 
@@ -274,7 +322,11 @@ async function drain() {
   draining = true;
   while (queue.length) {
     const msg = queue.shift()!;
-    if (msg.type === 'out') print(msg.text);
+    if (msg.type === 'out') {
+      // crew chat lines start with a magenta [handle]
+      if (msg.text.startsWith('\x1b[95m[')) sound.play('chat');
+      print(msg.text);
+    }
     else if (msg.type === 'roll') await animateRoll(msg.roll);
     else if (msg.type === 'hud') {
       renderHud(msg.hud);
@@ -287,13 +339,25 @@ async function drain() {
             : { title: `SAFEHOUSE ${msg.hud.code}`, subtitle: `${msg.hud.party.length}/4 netrunners · share the code · host types start` },
         );
         renderActions();
+        sound.setAmbience('lobby');
       }
     } else if (msg.type === 'scene') {
+      const prev = lastScene;
+      if (msg.scene.view === 'combat' && prev && prev.view !== 'combat') sound.play('encounter');
+      if (msg.scene.parley?.reply && msg.scene.parley.reply !== prev?.parley?.reply) sound.play('wyrm');
+      if (!prev || prev.view !== msg.scene.view) sound.setAmbience(msg.scene.view as Ambience);
       lastScene = msg.scene;
       lastActions = msg.actions;
       scene.setScene(msg.scene);
       renderActions();
-    } else if (msg.type === 'fx') scene.playFx(msg.fx);
+    } else if (msg.type === 'fx') {
+      scene.playFx(msg.fx);
+      if (msg.fx.kind === 'end') sound.play(msg.fx.win ? 'win' : 'lose');
+      else {
+        const sfx = FX_SOUND[msg.fx.kind];
+        if (sfx) sound.play(sfx);
+      }
+    }
     else if (msg.type === 'prompt') {
       prompt = msg.text;
       redraw();
@@ -324,4 +388,6 @@ function connect() {
 }
 
 print('\x1b[2mdialing the net...\x1b[0m');
+renderActions();
+sound.setAmbience('lobby');
 connect();

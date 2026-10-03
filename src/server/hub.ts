@@ -1,6 +1,6 @@
 import { randomInt } from 'node:crypto';
 import type { ActionButton, Fx, HudState, RollView, SceneState } from '../shared/protocol.js';
-import { BANNER, c } from './ansi.js';
+import { c } from './ansi.js';
 import { Game, type GamePlayer } from './game/game.js';
 import type { WardenBrain } from './game/ice.js';
 import type { Narrator } from './game/narrator.js';
@@ -84,8 +84,7 @@ export class Hub {
     this.players.set(session.id, p);
     p.send(
       [
-        BANNER,
-        c.dim('  a co-op dungeon delve for 2-4 netrunners · Neo-Avalon, 2077'),
+        c.bold(c.cyan('ICEBREAKER')) + c.dim(' · a co-op dungeon delve for 2-4 netrunners · Neo-Avalon, 2077'),
         '',
         c.italic('In Neo-Avalon the corporations keep their secrets the old way: in vaults, guarded by'),
         c.italic('ancient AI wyrms chained beneath their towers. You are a crew of netrunners. Tonight you delve.'),

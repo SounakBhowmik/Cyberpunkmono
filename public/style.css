@@ -198,3 +198,77 @@ header {
   #terminal { flex-basis: 32vh; }
   .act { font-size: 12px; padding: 6px 9px; }
 }
+
+/* ------------------------------------------------------------ sound + touch input */
+
+header { align-items: center; }
+.sound-toggle {
+  margin-left: auto;
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted);
+  background: none;
+  border: 1px solid rgba(215, 227, 255, 0.2);
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.sound-toggle[aria-pressed='true'] { color: var(--cyan); border-color: rgba(0, 240, 255, 0.5); }
+
+header, #hud, #actions, #cmdbar { flex-shrink: 0; }
+
+#cmdbar { display: none; gap: 6px; margin-top: 8px; }
+#cmdbar input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 16px; /* 16px stops iOS from zooming in on focus */
+  color: #d7e3ff;
+  background: var(--panel);
+  border: 1px solid rgba(0, 240, 255, 0.45);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+#cmdbar input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 10px rgba(0, 240, 255, 0.35); }
+#cmdbar button {
+  font: inherit;
+  font-size: 14px;
+  color: var(--bg);
+  background: var(--cyan);
+  border: none;
+  border-radius: 4px;
+  padding: 0 14px;
+}
+@media (pointer: coarse) {
+  #cmdbar { display: flex; }
+}
+
+/* ------------------------------------------------------------ phones */
+
+@media (max-width: 600px) {
+  .rig {
+    height: 100dvh;
+    padding: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom));
+  }
+  header { padding-bottom: 6px; }
+  header .hint { display: none; }
+  .logo { font-size: 14px; }
+  #hud { font-size: 11px; padding: 6px 8px; margin-bottom: 6px; min-height: 0; }
+  #hud .row + .row { margin-top: 3px; }
+  #hud .wide-only { display: none; }
+  #hud .row.deck.empty { display: none; }
+  #hud .chip { padding: 0 4px; }
+  .stage { min-height: 180px; margin-bottom: 6px; }
+  #actions {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    margin-bottom: 6px;
+    padding-bottom: 2px;
+  }
+  #actions::-webkit-scrollbar { display: none; }
+  .act { flex: 0 0 auto; min-height: 40px; font-size: 13px; padding: 6px 12px; }
+  #terminal { flex: 0 0 22dvh; min-height: 110px; padding: 6px; }
+  #cmdbar { margin-top: 6px; }
+}

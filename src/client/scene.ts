@@ -66,6 +66,11 @@ export class SceneView {
   private rain: { x: number; y: number; s: number }[] = [];
   private readonly reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+  /** Phone-width scenes stack things vertically. */
+  private get narrow() {
+    return this.w < 560;
+  }
+
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly onRoomClick: (room: SceneRoom, scene: SceneState) => void,
@@ -432,7 +437,8 @@ export class SceneView {
     this.glow(COLORS.cyan, 18);
     this.text(this.lobby.title, this.w / 2, this.h * 0.3, size, COLORS.cyan, 'center', 700);
     this.noGlow();
-    this.text(this.lobby.subtitle, this.w / 2, this.h * 0.3 + size * 0.9, Math.max(12, size * 0.28), COLORS.text);
+    const sub = Math.max(12, size * 0.28);
+    this.wrap(this.lobby.subtitle, this.w - 40, sub).forEach((l, i) => this.text(l, this.w / 2, this.h * 0.3 + size * 0.9 + i * (sub + 6), sub, COLORS.text));
   }
 
   // ---------------------------------------------------------------- map
@@ -445,13 +451,30 @@ export class SceneView {
     const ys = all.map((r) => r.y);
     const minY = Math.min(...ys, -0.5);
     const maxY = Math.max(...ys, 0.5);
-    const padX = Math.min(90, this.w * 0.1);
-    const padY = Math.min(70, this.h * 0.16);
-    const bw = Math.min(124, (this.w - padX * 2) / (maxX + 1) - 18);
-    const bh = Math.min(54, Math.max(38, this.h * 0.12));
-    const px = (x: number) => padX + (x / maxX) * (this.w - padX * 2);
-    const py = (y: number) => padY + ((y - minY) / (maxY - minY || 1)) * (this.h - padY * 2 - 10) + 10;
-    const pos = new Map(all.map((r) => [r.id, { x: px(r.x), y: py(r.y) }]));
+    const vertical = this.narrow;
+    let bw: number;
+    let bh: number;
+    let pos: Map<string, { x: number; y: number }>;
+    if (vertical) {
+      // depth runs top to bottom, siblings spread across
+      const lanes = maxY - minY + 1;
+      const padX = 12;
+      const padTop = 34;
+      const padBottom = 34;
+      bw = Math.min(124, (this.w - padX * 2) / lanes - 12);
+      bh = Math.max(28, Math.min(46, (this.h - padTop - padBottom) / (maxX + 1) - 10));
+      const px = (y: number) => padX + bw / 2 + ((y - minY) / (maxY - minY || 1)) * (this.w - padX * 2 - bw);
+      const py = (x: number) => padTop + bh / 2 + (x / maxX) * (this.h - padTop - padBottom - bh);
+      pos = new Map(all.map((r) => [r.id, { x: px(r.y), y: py(r.x) }]));
+    } else {
+      const padX = Math.min(90, this.w * 0.1);
+      const padY = Math.min(70, this.h * 0.16);
+      bw = Math.min(124, (this.w - padX * 2) / (maxX + 1) - 18);
+      bh = Math.min(54, Math.max(38, this.h * 0.12));
+      const px = (x: number) => padX + (x / maxX) * (this.w - padX * 2);
+      const py = (y: number) => padY + ((y - minY) / (maxY - minY || 1)) * (this.h - padY * 2 - 10) + 10;
+      pos = new Map(all.map((r) => [r.id, { x: px(r.x), y: py(r.y) }]));
+    }
 
     // corridors with packets flowing
     ctx.lineWidth = 2;
@@ -508,7 +531,7 @@ export class SceneView {
       ctx.stroke();
       this.noGlow();
 
-      const fs = Math.max(10, Math.min(13, bw / 9));
+      const fs = Math.max(10, Math.min(13, bw / 9, bh / 3.2));
       this.text(r.kind === 'vault' ? 'VAULT' : r.id, p.x, y + bh * 0.32, fs, r.known === 'seen' ? COLORS.muted : COLORS.text, 'center', 700);
       // icons row
       const icons: [string, string][] = [];
@@ -542,12 +565,15 @@ export class SceneView {
       this.runnerPos.y += (target.y - this.runnerPos.y) * 0.12;
       const bob = Math.sin(this.now * 4) * 3;
       ctx.globalAlpha = s.ghosted ? 0.35 + 0.2 * Math.sin(this.now * 8) : 1;
-      this.drawHero('rogue', this.runnerPos.x, this.runnerPos.y - bh / 2 - 16 + bob, 11);
+      if (vertical) this.drawHero('rogue', this.runnerPos.x - bw / 2 - 2 + bob * 0.5, this.runnerPos.y - bh / 2, 8);
+      else this.drawHero('rogue', this.runnerPos.x, this.runnerPos.y - bh / 2 - 16 + bob, 11);
       ctx.globalAlpha = 1;
     }
 
     // legend
-    const legend = '⚿ locked  ◆ intel  ✦ program  ☠ ICE lair' + (s.patrolAt ? '  ◉ patrol' : '');
+    const legend = this.narrow
+      ? '⚿ lock  ◆ intel  ✦ prog  ☠ lair' + (s.patrolAt ? '  ◉ patrol' : '')
+      : '⚿ locked  ◆ intel  ✦ program  ☠ ICE lair' + (s.patrolAt ? '  ◉ patrol' : '');
     this.text(legend, 12, this.h - 14, 11, COLORS.muted, 'left');
     if (this.forceMap && s.view !== 'explore') this.text('[map view · press map to return]', this.w - 12, this.h - 14, 11, COLORS.muted, 'right');
   }
@@ -640,7 +666,8 @@ export class SceneView {
       const y = this.h * (n === 1 ? 0.5 : 0.28 + (i / (n - 1)) * 0.44);
       const bob = Math.sin(this.now * 3 + i) * 3;
       this.drawHero(m.classes[0] ?? 'rogue', x, y + bob, 18, m.ready);
-      this.text(`${m.handle}${m.classes.length ? ` · ${m.classes.join('+')}` : ''}`, x, y + 36, 11, m.you ? COLORS.cyan : COLORS.muted);
+      const label = this.narrow ? m.handle.slice(0, 9) : `${m.handle}${m.classes.length ? ` · ${m.classes.join('+')}` : ''}`;
+      this.text(label, x, y + 36, 11, m.you ? COLORS.cyan : COLORS.muted);
     });
     if (!c) return;
     // the monster
@@ -684,8 +711,8 @@ export class SceneView {
     const p = s.parley ?? { suspicion: 40, sealed: false };
     const t = this.now;
     // the coiled body, tail to head
-    const hx = this.w * 0.6;
-    const hy = this.h * 0.42;
+    const hx = this.narrow ? this.w * 0.5 : this.w * 0.6;
+    const hy = this.narrow ? this.h * 0.47 : this.h * 0.42;
     const seg = 26;
     const r0 = Math.min(this.w, this.h) * 0.075;
     for (let i = seg; i >= 1; i--) {
@@ -769,28 +796,41 @@ export class SceneView {
     }
 
     // suspicion meter
-    const mw = Math.min(220, this.w * 0.28);
+    const mw = this.narrow ? this.w * 0.4 : Math.min(220, this.w * 0.28);
     const mx = this.w - mw - 16;
-    this.text(`${s.wyrm.name} · ${s.wyrm.title}`, this.w - 16, 18, 12, color, 'right', 700);
-    this.text('suspicion', mx, 38, 10, COLORS.muted, 'left');
+    const my = this.narrow ? this.h * 0.47 + Math.min(this.w, this.h) * 0.2 : 46;
+    if (!this.narrow) this.text(`${s.wyrm.name} · ${s.wyrm.title}`, this.w - 16, 18, 12, color, 'right', 700);
+    this.text('suspicion', mx, my - 8, 10, COLORS.muted, 'left');
     ctx.fillStyle = 'rgba(255,255,255,0.08)';
-    ctx.fillRect(mx, 46, mw, 6);
+    ctx.fillRect(mx, my, mw, 6);
     ctx.fillStyle = eyeColor;
-    ctx.fillRect(mx, 46, mw * sus, 6);
+    ctx.fillRect(mx, my, mw * sus, 6);
 
-    // speech bubbles
-    const bubbleW = Math.min(360, this.w * 0.42);
-    if (p.reply) this.bubble(p.reply, 16, 16, bubbleW, color, 'right');
-    if (p.said) this.bubble(`you: ${p.said}`, 16, this.h * 0.62, bubbleW, COLORS.green, 'left');
-    if (!p.reply && !p.said) this.text(`the wyrm watches you. press "talk" and say something clever.`, this.w * 0.3, this.h * 0.86, 12, COLORS.muted);
-    if (p.sealed) this.text('SEALED · only the code opens the vault now', this.w / 2, this.h - 22, 14, COLORS.red, 'center', 700);
+    // speech bubbles: beside the wyrm on wide screens, above and below it on phones
+    if (this.narrow) {
+      const bw = this.w - 24;
+      if (p.reply) this.bubble(p.reply, 12, 10, bw, color, 'right', 3);
+      if (p.said) this.bubble(`you: ${p.said}`, 12, -10, bw, COLORS.green, 'left', 2);
+    } else {
+      const bubbleW = Math.min(360, this.w * 0.42);
+      if (p.reply) this.bubble(p.reply, 16, 16, bubbleW, color, 'right');
+      if (p.said) this.bubble(`you: ${p.said}`, 16, this.h * 0.62, bubbleW, COLORS.green, 'left');
+    }
+    if (!p.reply && !p.said) {
+      const hint = this.wrap('the wyrm watches you. press "talk" and say something clever.', this.w * 0.8, 12);
+      hint.forEach((l, i) => this.text(l, this.w / 2, this.h * 0.88 + i * 16, 12, COLORS.muted));
+    }
+    if (p.sealed) this.text(this.narrow ? 'SEALED · use the code' : 'SEALED · only the code opens the vault now', this.w / 2, this.h * 0.5, 14, COLORS.red, 'center', 700);
   }
 
-  private bubble(str: string, x: number, y: number, maxW: number, color: string, tail: 'left' | 'right') {
+  /** A speech bubble. A negative y anchors it that far from the bottom edge. */
+  private bubble(str: string, x: number, y: number, maxW: number, color: string, tail: 'left' | 'right', maxLines = 6) {
     const ctx = this.ctx;
-    const size = 12;
-    const lines = this.wrap(str, maxW - 20, size).slice(0, 6);
+    const size = this.narrow ? 11 : 12;
+    let lines = this.wrap(str, maxW - 20, size);
+    if (lines.length > maxLines) lines = [...lines.slice(0, maxLines - 1), `${lines[maxLines - 1]!.slice(0, -1)}…`];
     const h = lines.length * (size + 5) + 16;
+    if (y < 0) y = this.h + y - h - 12;
     ctx.fillStyle = 'rgba(7, 6, 13, 0.88)';
     this.roundRect(x, y, maxW, h, 8);
     ctx.fill();
@@ -980,7 +1020,9 @@ export class SceneView {
       this.text(shown, this.w / 2, this.h * 0.22, size, COLORS.cyan, 'center', 700);
       this.noGlow();
       if (age > 1.2) this.text(`${o.corp} · ${o.district}`, this.w / 2, this.h * 0.22 + size, 14, COLORS.magenta);
-      if (age > 2.6) this.text(`beneath the tower sleeps ${o.wyrm}, a ${o.title}`, this.w / 2, this.h * 0.22 + size + 26, 13, o.color);
+      if (age > 2.6) {
+        this.wrap(`beneath the tower sleeps ${o.wyrm}, a ${o.title}`, this.w - 40, 13).forEach((l, i) => this.text(l, this.w / 2, this.h * 0.22 + size + 26 + i * 18, 13, o.color));
+      }
       ctx.globalAlpha = 1;
       return;
     }

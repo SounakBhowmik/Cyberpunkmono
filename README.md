@@ -6,6 +6,10 @@ In Neo-Avalon the corporations keep their secrets the old way: in vaults, guarde
 
 It plays like a little arcade cabinet. The top of the screen is an animated neon scene: a rain-soaked city intro, a dungeon map where your rogue glides between rooms while packets flow down the corridors, turn-based fights against animated ICE monsters, a big d20 that tumbles for every risky roll, and the wyrm itself, coiled around the vault, breathing, with an eye that narrows as it gets suspicious. Under the scene sit buttons for whatever you can do right now, and at the bottom a compact terminal for the log and crew chat. You can click rooms on the map, press buttons, or type; anything you type that isn't a command goes to your crew.
 
+Everything has sound: chiptune effects synthesized live with the Web Audio API (dice that tick as they tumble and land with a fanfare or a sad trombone, unlock arpeggios, alarms, hits, the wyrm's growl) over a quiet rain-and-drone ambience that shifts with the scene. A toggle in the corner mutes it and remembers your choice.
+
+It works on phones too: the map turns vertical, buttons become one swipeable row of thumb-sized targets, and touch devices get a proper input box instead of typing into the terminal.
+
 Nobody sees the whole picture, so you win by talking to each other:
 
 - **Runner (rogue)** walks the dungeon under fog of war: their map only shows rooms they've visited and the doors next to them. They pick locks, loot programs and parley with the wyrm.
@@ -64,11 +68,12 @@ src/server/game/ice.ts       the wyrm's brain: LLM, scripted fallback, intel ver
 src/server/game/narrator.ts  the dungeon master
 src/client/main.ts           terminal, line editor, action buttons, HUD, message queue
 src/client/scene.ts          the animated canvas scene: city, map, fights, wyrm, dice, effects
+src/client/sound.ts          synthesized sound effects and ambience
 test/                        world invariants, full delves, combat, breeds, programs
 scripts/balance.mts          simulates 400 delves with a bot crew to tune difficulty
 ```
 
-The server owns all state. Each player gets their own role-filtered scene (so the rogue's client never even receives the ports), a list of buttons for what they can do right now, and effect events (unlock, hit, heal, slay, alarm) that the client animates. All art is procedural canvas drawing, so there are no image assets. The `Session` interface in `hub.ts` is transport-agnostic, which leaves room for an SSH front door later.
+The server owns all state. Each player gets their own role-filtered scene (so the rogue's client never even receives the ports), a list of buttons for what they can do right now, and effect events (unlock, hit, heal, slay, alarm) that the client animates. All art is procedural canvas drawing and all audio is synthesized, so there are no image or sound assets. The `Session` interface in `hub.ts` is transport-agnostic, which leaves room for an SSH front door later.
 
 ```bash
 npm test           # node:test via tsx
