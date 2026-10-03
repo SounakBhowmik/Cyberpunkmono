@@ -1,8 +1,8 @@
 import { randomInt } from 'node:crypto';
-import type { ActionButton, Fx, HudState, RollView, SceneState } from '../shared/protocol.js';
+import type { ActionButton, Fx, HudState, SceneState } from '../shared/protocol.js';
 import { c } from './ansi.js';
 import { Game, type GamePlayer } from './game/game.js';
-import type { WardenBrain } from './game/ice.js';
+import type { ParleyJudge } from './game/parley.js';
 import type { Narrator } from './game/narrator.js';
 
 /** A connected terminal, independent of transport (WebSocket today, SSH later). */
@@ -10,7 +10,6 @@ export interface Session {
   readonly id: string;
   send(text: string): void;
   setPrompt(text: string): void;
-  roll(roll: RollView): void;
   hud(hud: HudState): void;
   scene(scene: SceneState, actions: ActionButton[]): void;
   fx(fx: Fx): void;
@@ -37,9 +36,6 @@ class Player implements GamePlayer {
   setPrompt(text: string) {
     this.session.setPrompt(text);
   }
-  showRoll(roll: RollView) {
-    this.session.roll(roll);
-  }
   setHud(hud: HudState) {
     this.session.hud(hud);
   }
@@ -63,11 +59,11 @@ const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const HANDLE_RE = /^[A-Za-z0-9_-]{2,16}$/;
 
 export interface HubOptions {
-  warden: WardenBrain;
+  judge: ParleyJudge;
   narrator?: Narrator;
   minPlayers?: number;
-  tickMs?: number;
   roundMs?: number;
+  voteMs?: number;
 }
 
 export class Hub {
@@ -85,10 +81,11 @@ export class Hub {
     this.players.set(session.id, p);
     p.send(
       [
-        c.bold(c.cyan('ICEBREAKER')) + c.dim(' · a co-op dungeon delve for 2-4 netrunners · Neo-Avalon, 2077'),
+        c.bold(c.yellow('LAST LIGHT')) + c.dim(' · a co-op descent for 2-4 players · Neo-Avalon, 2077'),
         '',
-        c.italic('In Neo-Avalon the corporations keep their secrets the old way: in vaults, guarded by'),
-        c.italic('ancient AI wyrms chained beneath their towers. You are a crew of netrunners. Tonight you delve.'),
+        c.italic('Beneath the neon city of Neo-Avalon, something ancient is waking: the Devourer.'),
+        c.italic('When it wakes, every mind in the city goes dark. A few small spirits of the net stand in its way.'),
+        c.italic('You are the last light.'),
         '',
         'pick a handle, choom.',
       ].join('\n'),
@@ -190,7 +187,7 @@ export class Hub {
     const room = this.rooms.get(code);
     if (!code) return p.send(c.dim('usage: join <code>'));
     if (!room) return p.send(c.red(`no safehouse called ${code}.`));
-    if (room.game) return p.send(c.red(`${code} is mid-delve. wait for them to finish.`));
+    if (room.game) return p.send(c.red(`${code} is mid-descent. wait for them to finish.`));
     if (room.players.length >= MAX_PLAYERS) return p.send(c.red(`${code} is full (${MAX_PLAYERS} max).`));
     if (room.players.some((q) => q.handle.toLowerCase() === p.handle.toLowerCase())) {
       return p.send(c.red(`someone in ${code} already goes by ${p.handle}. reconnect with another handle.`));
@@ -220,7 +217,7 @@ export class Hub {
       `  ${c.cyan('who'.padEnd(12))}${c.dim('who is here')}`,
       `  ${c.cyan('leave'.padEnd(12))}${c.dim('back to the lobby')}`,
     ];
-    if (room.host === p) lines.unshift(`  ${c.cyan('start'.padEnd(12))}${c.dim(`begin the delve (needs ${this.minPlayers}+ players)`)}`);
+    if (room.host === p) lines.unshift(`  ${c.cyan('start'.padEnd(12))}${c.dim(`begin the descent (needs ${this.minPlayers}+ players)`)}`);
     return lines.join('\n');
   }
 
@@ -252,15 +249,15 @@ export class Hub {
     }
     this.toRoom(room, c.cyan('\n>> jacking in...'));
     room.game = new Game(room.players, {
-      warden: this.opts.warden,
+      judge: this.opts.judge,
       narrator: this.opts.narrator,
       code: room.code,
-      tickMs: this.opts.tickMs,
       roundMs: this.opts.roundMs,
+      voteMs: this.opts.voteMs,
       onEnd: () => {
         room.game = undefined;
         for (const q of room.players) q.setPrompt(this.roomPrompt(q));
-        this.toRoom(room, c.dim(`back in the safehouse. ${room.host.handle} can start another delve.`));
+        this.toRoom(room, c.dim(`back in the safehouse. ${room.host.handle} can start another descent.`));
         setTimeout(() => this.pushSafehouseHud(room), 4000);
       },
     });

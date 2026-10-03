@@ -1,30 +1,27 @@
-// Messages exchanged over the WebSocket. The server owns all game state and
-// sends finished text; the client is a terminal with a line editor, a dice
-// animator and a HUD bar.
+// Messages exchanged over the WebSocket. The server owns all game state; the
+// client draws the scene, the HUD and the buttons, and plays effects.
 
-export interface RollView {
-  sides: number;
-  natural: number;
-  /** Finished, colored result line shown once the die stops tumbling. */
-  text: string;
-  outcome?: 'crit' | 'success' | 'fail' | 'fumble';
-  /** Short caption under the big die, e.g. "neo · picks the lock". */
-  caption?: string;
-}
+export type ClassId = 'striker' | 'mystic' | 'guardian';
+export type WyrmColor = 'red' | 'blue' | 'green' | 'black' | 'white';
 
 export interface HudMember {
   handle: string;
   /** Reroll count: the avatar is generated from handle + this number. */
   avatar: number;
-  /** Class names, e.g. ["rogue"] or ["mage", "cleric"]. */
-  classes: string[];
+  classes: ClassId[];
   you: boolean;
   host?: boolean;
-  /** In combat: has this player locked in an action for the round? */
+  /** In combat: has this player used every action they have this round? */
   ready?: boolean;
 }
 
-export type WyrmColor = 'red' | 'blue' | 'green' | 'black' | 'white';
+export interface WyrmInfo {
+  name: string;
+  title: string;
+  color: WyrmColor;
+  /** How to talk to it, e.g. "craves worship". */
+  temperament: string;
+}
 
 export type HudState =
   | { mode: 'street'; handle?: string; avatar?: number }
@@ -32,45 +29,66 @@ export type HudState =
   | {
       mode: 'delve';
       code: string;
-      corp: string;
-      district: string;
-      wyrm: { name: string; title: string; color: WyrmColor };
-      trace: number;
+      wyrm: WyrmInfo;
+      corruption: number;
+      floor: number;
+      floors: number;
+      seals: number;
       party: HudMember[];
-      deck: { name: string; charges: number }[];
-      location: string;
-      encounter?: { name: string; hp: number; maxHp: number; round: number };
-      lastRoll?: string;
+      relics: { name: string; desc: string }[];
     };
 
-export interface SceneRoom {
-  id: string;
+/** What a foe will do when the round resolves. Always visible to players. */
+export type IntentKind = 'attack' | 'charge' | 'heavy' | 'shell' | 'wail';
+
+export interface Intent {
+  kind: IntentKind;
+  amount: number;
+  /** e.g. "CLAW 8" */
   label: string;
-  /** Grid position: column = distance from the gateway. */
-  x: number;
-  y: number;
-  links: string[];
-  kind: 'gateway' | 'room' | 'gate' | 'vault';
-  /** How much this player knows about the room. */
-  known: 'hidden' | 'seen' | 'visited' | 'full';
-  locked: boolean;
-  port?: number;
-  intel?: boolean;
-  program?: boolean;
-  /** Monster id lairing here, if this player knows about it. */
-  lair?: string;
+  /** e.g. "a Ward blocks it" */
+  hint: string;
+}
+
+export interface Foe {
+  /** Sprite id. */
+  id: string;
+  name: string;
+  hp: number;
+  maxHp: number;
+  intent: Intent;
+  exposed?: boolean;
+  elite?: boolean;
+  boss?: boolean;
+}
+
+export type RouteKind = 'fight' | 'elite' | 'shrine' | 'cache' | 'boss';
+
+export interface RouteOption {
+  id: string;
+  kind: RouteKind;
+  label: string;
+  detail: string;
+  /** Handles of players who voted for this option. */
+  votes: string[];
+  /** For fights: the sprite id of the horror waiting there. */
+  foe?: string;
 }
 
 export interface SceneState {
-  view: 'explore' | 'combat' | 'parley' | 'vault';
-  rooms: SceneRoom[];
-  runnerAt: string;
-  patrolAt?: string;
-  ghosted?: boolean;
+  view: 'route' | 'combat' | 'boss';
+  floor: number;
+  floors: number;
+  corruption: number;
+  seals: number;
   party: HudMember[];
-  wyrm: { name: string; title: string; color: WyrmColor };
-  combat?: { monster: string; name: string; hp: number; maxHp: number; round: number };
-  parley?: { suspicion: number; said?: string; reply?: string; sealed: boolean };
+  wyrm: WyrmInfo;
+  /** The kinds of rooms already passed, for drawing the descent. */
+  path: RouteKind[];
+  options?: RouteOption[];
+  foe?: Foe;
+  round?: number;
+  parley?: { said?: string; saidBy?: string; reply?: string; mood?: 'calmer' | 'angrier' | 'same' };
 }
 
 export interface ActionButton {
@@ -81,25 +99,28 @@ export interface ActionButton {
   hint?: string;
   tone?: 'go' | 'risk' | 'fight' | 'magic' | 'talk' | 'info';
   disabled?: boolean;
+  /** Buttons are grouped under their class name in the action bar. */
+  group?: string;
 }
 
+export type Move = 'strike' | 'fury' | 'hex' | 'bolt' | 'ward' | 'mend' | 'speak';
+
 export type Fx =
-  | { kind: 'intro'; corp: string; district: string; wyrm: string; title: string; color: WyrmColor }
-  | { kind: 'move'; from: string; to: string }
-  | { kind: 'unlock'; node: string }
-  | { kind: 'alarm' }
-  | { kind: 'hurt'; amount: number }
+  | { kind: 'intro'; wyrm: WyrmInfo }
+  | { kind: 'enter'; room: RouteKind }
+  | { kind: 'act'; by: string; cls: ClassId; move: Move; amount?: number }
+  | { kind: 'foe'; move: IntentKind; amount: number; blocked: boolean }
+  | { kind: 'stun' }
   | { kind: 'heal'; amount: number }
-  | { kind: 'strike'; amount: number; by: string }
-  | { kind: 'slay' }
-  | { kind: 'loot'; name: string }
+  | { kind: 'slay'; boss?: boolean }
+  | { kind: 'relic'; name: string }
+  | { kind: 'vote'; by: string }
   | { kind: 'end'; win: boolean };
 
 export type ServerMessage =
   | { type: 'out'; text: string }
   | { type: 'prompt'; text: string }
   | { type: 'clear' }
-  | { type: 'roll'; roll: RollView }
   | { type: 'hud'; hud: HudState }
   | { type: 'scene'; scene: SceneState; actions: ActionButton[] }
   | { type: 'fx'; fx: Fx };

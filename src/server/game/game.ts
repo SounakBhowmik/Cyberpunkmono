@@ -1,15 +1,13 @@
-import type { ActionButton, Fx, HudMember, HudState, RollView, SceneRoom, SceneState } from '../../shared/protocol.js';
+import type { ActionButton, ClassId, Foe, Fx, HudMember, HudState, Intent, Move, RouteKind, RouteOption, SceneState, WyrmInfo } from '../../shared/protocol.js';
 import { c } from '../ansi.js';
-import { MONSTERS, PROGRAMS, PROGRAM_IDS, programByName, type MonsterSpec, type ProgramId } from './bestiary.js';
-import { BREEDS, BREED_IDS } from './breeds.js';
-import { COMBAT_VERBS, Encounter, type CombatAction, type CombatHost } from './combat.js';
-import { Dice, describeCheck, passed, type CheckResult } from './dice.js';
-import { INJECTION, intelMentioned, type IntelKey, type WardenBrain, type WardenTurn } from './ice.js';
+import { BREEDS, BREED_IDS, type Breed } from './breeds.js';
+import {
+  BOSS, CLASS_MOVES, CLASS_NAME, DISTRICTS, FOES, MOVES, NUM, RELICS, RELIC_IDS, ROOM_INFO, intentOf,
+  type FoeSpec, type IntentSpec, type RelicId,
+} from './content.js';
 import { ScriptedNarrator, type NarrationEvent, type Narrator } from './narrator.js';
+import type { ParleyJudge, ParleyTurn } from './parley.js';
 import { Rng } from './rng.js';
-import { GATEWAY, VAULT, bfsDepths, generateWorld, type IntelKind, type NetNode, type World } from './world.js';
-
-export type Role = 'RUNNER' | 'OPERATOR' | 'SENTRY';
 
 export interface GamePlayer {
   readonly id: string;
@@ -18,7 +16,6 @@ export interface GamePlayer {
   readonly avatar?: number;
   send(text: string): void;
   setPrompt(text: string): void;
-  showRoll(roll: RollView): void;
   setHud(hud: HudState): void;
   setScene(scene: SceneState, actions: ActionButton[]): void;
   fx(fx: Fx): void;
@@ -27,183 +24,131 @@ export interface GamePlayer {
 export interface GameResult {
   win: boolean;
   reason: string;
-  trace: number;
+  corruption: number;
   seconds: number;
 }
 
 export interface GameOptions {
-  warden: WardenBrain;
+  judge: ParleyJudge;
   onEnd: (result: GameResult) => void;
   narrator?: Narrator;
   seed?: number;
   /** Room code, shown in the HUD. */
   code?: string;
-  /** Passive trace interval in ms. 0 disables it (tests). */
-  tickMs?: number;
   /** Combat round timer in ms. 0 disables it (tests). */
   roundMs?: number;
-  /** Random source for dice. Tests pass a constant. */
-  random?: () => number;
+  /** Route vote timer in ms. 0 disables it (tests). */
+  voteMs?: number;
 }
 
-export const RULES = {
-  moveCost: 2,
-  catCost: 1,
-  crackCostPerSecurity: 2,
-  crackSlipCost: 6,
-  crackWrongPortCost: 12,
-  crackFumbleCost: 15,
-  rogueBonus: 4,
-  clericBonus: 3,
-  stealthDc: 13,
-  talkCost: 3,
-  patrolHitCost: 20,
-  patrolSweepCost: 10,
-  patrolEvery: 3,
-  spoofBase: 8,
-  spoofCooldown: 4,
-  lockoutCost: 20,
-  grantMaxSuspicion: 60,
-  grantIntelNeeded: 2,
-  blackGrudgeSlack: 15,
-  historyLimit: 12,
-  ghostMoves: 3,
-  mendAmount: 12,
-};
+type Phase = 'route' | 'combat' | 'boss' | 'ended';
 
-export const CLASS_OF: Record<Role, string> = { RUNNER: 'rogue', OPERATOR: 'mage', SENTRY: 'cleric' };
-const ROLE_COLOR: Record<Role, (s: string) => string> = { RUNNER: c.green, OPERATOR: c.cyan, SENTRY: c.yellow };
-const INTEL_LABEL: Record<IntelKind, string> = {
-  fragment: 'passcode fragment',
-  personnel: 'personnel record',
-  comms: 'sysadmin mail',
-};
-const INTEL_KEY_LABEL: Record<IntelKey, string> = {
-  admin: "the sysadmin's name",
-  ticket: 'the maintenance ticket',
-  pet: "the sysadmin's cat",
-};
+interface FoeState {
+  spec: FoeSpec;
+  name: string;
+  hp: number;
+  maxHp: number;
+  step: number;
+  intent: IntentSpec;
+  pendingHeavy?: IntentSpec;
+  exposed: boolean;
+  enraged: number;
+  elite: boolean;
+  boss: boolean;
+}
 
-const COMMAND_ROLE: Record<string, Role> = {
-  ls: 'RUNNER', look: 'RUNNER', cat: 'RUNNER', move: 'RUNNER', cd: 'RUNNER', crack: 'RUNNER',
-  take: 'RUNNER', talk: 'RUNNER', download: 'RUNNER',
-  map: 'OPERATOR',
-  logs: 'SENTRY', spoof: 'SENTRY',
-};
-const RUNNER_BLOCKED_IN_COMBAT = new Set(['cat', 'move', 'cd', 'crack', 'take', 'talk', 'download']);
+interface Queued {
+  player: string;
+  cls: ClassId;
+  move: Move;
+  /** Speech damage, already judged; negative means it enraged the wyrm. */
+  amount?: number;
+}
 
-const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+/** Shields and heals land first, then set-ups, then the big hits. */
+const ORDER: Move[] = ['ward', 'mend', 'hex', 'bolt', 'speak', 'strike', 'fury'];
+const CLASS_COLOR: Record<ClassId, (s: string) => string> = { striker: c.red, mystic: c.cyan, guardian: c.yellow };
 
 export class Game {
-  readonly world: World;
-  readonly roles = new Map<string, Set<Role>>();
-  runnerAt = GATEWAY;
-  trace = 0;
-  patrolAt: string;
-  ended = false;
-  encounter?: Encounter;
-  readonly deck = new Map<ProgramId, number>();
+  readonly breed: Breed;
+  readonly wyrmName: string;
+  readonly district: string;
+  readonly classes = new Map<string, ClassId[]>();
+  corruption = 0;
+  floor = 1;
+  seals = 0;
+  phase: Phase = 'route';
+  readonly relics = new Set<RelicId>();
+  readonly path: RouteKind[] = [];
+  options: RouteOption[] = [];
+  foe?: FoeState;
+  round = 0;
 
   private readonly players = new Map<string, GamePlayer>();
   private readonly rng: Rng;
-  private readonly dice: Dice;
   private readonly narrator: Narrator;
-  private readonly unlocked = new Set<string>([GATEWAY]);
-  private readonly visited = new Set<string>([GATEWAY]);
-  /** Monsters still alive, with their current HP. */
-  private readonly lairs = new Map<string, { spec: MonsterSpec; hp: number }>();
-  private readonly iceLog: string[] = [];
   private readonly startedAt = Date.now();
-  private prevAt = GATEWAY;
-  private actions = 0;
-  private spoofReadyAt = 0;
-  private warnedAt = 0;
-  private ghostMoves = 0;
-  private lastRoll?: string;
-  private readonly layout = new Map<string, { x: number; y: number }>();
-  private lastSaid?: string;
-  private lastReply?: string;
-  private ticker?: NodeJS.Timeout;
-
-  private wardenHistory: WardenTurn[] = [];
-  private wardenSuspicion: number;
-  private wardenPeak: number;
-  private wardenLocked = false;
-  private wardenBusy = false;
-  private readonly mentioned = new Set<IntelKey>();
+  private readonly votes = new Map<string, string>();
+  private readonly acted = new Map<string, Set<ClassId>>();
+  private queued: Queued[] = [];
+  private pendingSpeech = 0;
+  private resolveWhenSpoken = false;
+  private lastFoe?: string;
+  /** The horror waiting behind each fight option, rolled when the floor opens. */
+  private readonly optionFoes = new Map<string, FoeSpec>();
+  private timer?: NodeJS.Timeout;
+  private parley: NonNullable<SceneState['parley']> = {};
+  private parleyHistory: ParleyTurn[] = [];
 
   constructor(players: GamePlayer[], private readonly opts: GameOptions) {
     const seed = opts.seed ?? Math.floor(Math.random() * 2 ** 31);
-    this.world = generateWorld(seed);
-    this.rng = new Rng(seed ^ 0x5eed);
-    this.dice = new Dice(opts.random);
+    this.rng = new Rng(seed);
+    this.breed = BREEDS[this.rng.pick(BREED_IDS)];
+    this.wyrmName = this.rng.pick(this.breed.names);
+    this.district = this.rng.pick(DISTRICTS);
     this.narrator = opts.narrator ?? new ScriptedNarrator();
-    this.wardenSuspicion = this.wardenPeak = this.world.breed.startSuspicion;
-    for (const [id, spec] of this.world.monsters) this.lairs.set(id, { spec, hp: spec.hp });
-
-    // Never start the patrol on the gate or right next to the runner's entry point.
-    const entry = this.world.nodes.get(GATEWAY)!.links;
-    const spawn = this.world.middle.filter((id) => id !== this.world.gateId && !entry.includes(id));
-    this.patrolAt = this.rng.pick(spawn.length ? spawn : this.world.middle);
 
     for (const p of players) this.players.set(p.id, p);
-    this.assignRoles(this.rng.shuffle(players.map((p) => p.id)));
+    this.assignClasses(this.rng.shuffle(players.map((p) => p.id)));
+    this.emit({ kind: 'intro', wyrm: this.wyrmInfo() });
     for (const p of players) this.brief(p);
-    this.refresh();
-    const w = this.world;
-    this.computeLayout();
-    this.refresh();
-    this.emit({ kind: 'intro', corp: w.corp, district: w.district.split(',')[0]!, wyrm: w.wardenName, title: w.breed.title, color: w.breed.id });
-    this.narrate({ kind: 'start', corp: w.corp, district: w.district.split(',')[0]!, wyrmName: w.wardenName, breedTitle: w.breed.title });
-
-    const tickMs = opts.tickMs ?? 20_000;
-    if (tickMs > 0) this.ticker = setInterval(() => this.addTrace(1, 'background sweep'), tickMs);
+    this.narrate({ kind: 'start', wyrmName: this.wyrmName, breedTitle: this.breed.title, district: this.district });
+    this.openRoute();
   }
 
-  // ---------------------------------------------------------------- roles
+  // ---------------------------------------------------------------- setup
 
-  private assignRoles(ids: string[]) {
-    const layouts: Record<number, Role[][]> = {
-      1: [['RUNNER', 'OPERATOR', 'SENTRY']],
-      2: [['RUNNER'], ['OPERATOR', 'SENTRY']],
-      3: [['RUNNER'], ['OPERATOR'], ['SENTRY']],
-      4: [['RUNNER'], ['OPERATOR'], ['SENTRY'], ['OPERATOR']],
+  private assignClasses(ids: string[]) {
+    const layouts: Record<number, ClassId[][]> = {
+      1: [['striker', 'mystic', 'guardian']],
+      2: [['striker'], ['mystic', 'guardian']],
+      3: [['striker'], ['mystic'], ['guardian']],
+      4: [['striker'], ['mystic'], ['guardian'], ['striker']],
     };
     const layout = layouts[Math.min(ids.length, 4)]!;
-    ids.forEach((id, i) => this.roles.set(id, new Set(layout[i] ?? ['OPERATOR'])));
+    ids.forEach((id, i) => this.classes.set(id, [...(layout[i] ?? ['striker'])]));
   }
 
-  private has(id: string, role: Role) {
-    return this.roles.get(id)?.has(role) ?? false;
+  private wyrmInfo(): WyrmInfo {
+    return { name: this.wyrmName, title: this.breed.title, color: this.breed.id, temperament: this.breed.temperament };
   }
 
-  private holdersOf(role: Role): GamePlayer[] {
-    return [...this.players.values()].filter((p) => this.has(p.id, role));
-  }
-
-  private roleTag(id: string) {
-    return [...(this.roles.get(id) ?? [])].map((r) => ROLE_COLOR[r](`${r} (${CLASS_OF[r]})`)).join(' + ');
-  }
-
-  /** A player dropped. Hand their roles to whoever is carrying the least. */
-  removePlayer(id: string) {
-    const orphaned = this.roles.get(id);
-    const leaving = this.players.get(id);
-    this.players.delete(id);
-    this.roles.delete(id);
-    if (this.ended || this.players.size === 0 || !orphaned) return;
-
-    for (const role of orphaned) {
-      if (this.holdersOf(role).length > 0) continue;
-      const heir = [...this.players.values()].sort(
-        (a, b) => (this.roles.get(a.id)?.size ?? 0) - (this.roles.get(b.id)?.size ?? 0),
-      )[0]!;
-      this.roles.get(heir.id)!.add(role);
-      this.broadcast(c.magenta(`>> ${leaving?.handle ?? 'someone'} dropped. ${heir.handle} picks up the ${role} rig.`));
-      heir.send(this.roleCommands(role));
-    }
-    this.refresh();
-    this.encounter?.checkReady();
+  private brief(p: GamePlayer) {
+    const roleLine: Record<ClassId, string> = {
+      striker: `${c.red('you are the STRIKER')}: you deal the damage. Strike hits double after the Mystic's Hex.`,
+      mystic: `${c.cyan('you are the MYSTIC')}: Hex sets up the Striker and interrupts charges. Bolt breaks shells.`,
+      guardian: `${c.yellow('you are the GUARDIAN')}: Ward when the foe is about to attack. Mend when corruption climbs.`,
+    };
+    p.send(
+      [
+        '',
+        c.bold(`LAST LIGHT // Neo-Avalon · ${this.district}`),
+        `${c.red(this.wyrmName)}, the Devourer, is waking beneath the city. When it wakes, every mind in Neo-Avalon goes dark.`,
+        `your crew is the last light. descend, and seal it at the bottom. ${c.red('corruption 100% = the city falls.')}`,
+        ...(this.classes.get(p.id) ?? []).map((cl) => roleLine[cl]),
+        c.dim(`every foe shows its next move. answer it. (this wyrm ${this.breed.temperament}: you can speak to it at the end.)`),
+      ].join('\n'),
+    );
   }
 
   // ---------------------------------------------------------------- output
@@ -212,752 +157,563 @@ export class Game {
     for (const p of this.players.values()) p.send(text);
   }
 
-  private toRole(role: Role, text: string) {
-    for (const p of this.holdersOf(role)) p.send(text);
-  }
-
-  private narrate(event: NarrationEvent) {
-    void this.narrator.narrate(event).then((text) => {
-      if (this.ended && event.kind !== 'end') return;
-      this.broadcast(c.italic(c.blue(`DM › ${text}`)));
-    });
-  }
-
-  /** Roll a d20 check everyone watches tumble. */
-  private check(who: string, label: string, bonus: number, dc: number): CheckResult {
-    const r = this.dice.check(bonus, dc);
-    const text = describeCheck(who, label, r);
-    this.lastRoll = stripAnsi(text);
-    const roll: RollView = { sides: 20, natural: r.natural, text, outcome: r.outcome, caption: `${who} · ${label} · DC ${r.dc}` };
-    for (const p of this.players.values()) p.showRoll(roll);
-    return r;
-  }
-
   private emit(fx: Fx) {
     for (const p of this.players.values()) p.fx(fx);
   }
 
+  private narrate(event: NarrationEvent) {
+    void this.narrator.narrate(event).then((text) => {
+      if (this.phase === 'ended' && event.kind !== 'end') return;
+      this.broadcast(c.italic(c.blue(`› ${text}`)));
+    });
+  }
+
   private refresh() {
     for (const p of this.players.values()) {
-      p.setPrompt(this.promptFor(p.id));
+      p.setPrompt(`${c.magenta(p.handle)}> `);
       p.setHud(this.hudFor(p.id));
       p.setScene(this.sceneFor(p.id), this.actionsFor(p.id));
     }
   }
 
-  // ---------------------------------------------------------------- scene
-
-  /** Columns by distance from the gateway, rows spread around the middle. */
-  private computeLayout() {
-    const depth = bfsDepths(this.world.nodes, GATEWAY);
-    const order = [GATEWAY, ...this.world.middle, VAULT];
-    const columns = new Map<number, string[]>();
-    for (const id of order) {
-      const d = depth.get(id) ?? 0;
-      columns.set(d, [...(columns.get(d) ?? []), id]);
-    }
-    for (const [d, ids] of columns) ids.forEach((id, i) => this.layout.set(id, { x: d, y: i - (ids.length - 1) / 2 }));
-  }
-
-  private sceneView(): SceneState['view'] {
-    if (this.encounter) return 'combat';
-    if (this.runnerAt === VAULT) return 'vault';
-    if (this.runnerAt === this.world.gateId && !this.isOpen(VAULT)) return 'parley';
-    return 'explore';
-  }
-
-  private sceneFor(id: string): SceneState {
-    const w = this.world;
-    const isOp = this.has(id, 'OPERATOR');
-    const isSentry = this.has(id, 'SENTRY');
-    const near = new Set<string>();
-    for (const v of this.visited) for (const l of this.node(v).links) near.add(l);
-
-    const rooms: SceneRoom[] = [...w.nodes.values()].map((n) => {
-      const visited = this.visited.has(n.id);
-      const known: SceneRoom['known'] = isOp ? 'full' : visited ? 'visited' : near.has(n.id) || isSentry ? 'seen' : 'hidden';
-      const pos = this.layout.get(n.id) ?? { x: 0, y: 0 };
-      const kind: SceneRoom['kind'] = n.id === GATEWAY ? 'gateway' : n.id === VAULT ? 'vault' : n.id === w.gateId ? 'gate' : 'room';
-      const room: SceneRoom = { id: n.id, label: known === 'hidden' ? '' : n.label, x: pos.x, y: pos.y, links: n.links, kind, known, locked: !this.isOpen(n.id) };
-      if (isOp || visited) {
-        if (n.files.some((f) => f.intel)) room.intel = true;
-        if (n.files.some((f) => f.program)) room.program = true;
-        const lair = this.lairs.get(n.id);
-        if (lair) room.lair = lair.spec.id;
-      }
-      if (isOp && room.locked && n.id !== VAULT) room.port = n.port;
-      return room;
-    });
-
-    const party: HudMember[] = [...this.players.values()].map((p) => ({
+  private party(viewer: string): HudMember[] {
+    const fighting = this.phase === 'combat' || this.phase === 'boss';
+    return [...this.players.values()].map((p) => ({
       handle: p.handle,
       avatar: p.avatar ?? 0,
-      classes: [...(this.roles.get(p.id) ?? [])].map((r) => CLASS_OF[r]),
-      you: p.id === id,
-      ...(this.encounter ? { ready: this.encounter.actions.has(p.id) } : {}),
+      classes: [...(this.classes.get(p.id) ?? [])],
+      you: p.id === viewer,
+      ...(fighting ? { ready: this.isReady(p.id) } : {}),
     }));
-    const enc = this.encounter;
-    return {
-      view: this.sceneView(),
-      rooms,
-      runnerAt: this.runnerAt,
-      ...(isSentry ? { patrolAt: this.patrolAt } : {}),
-      ...(this.ghostMoves > 0 ? { ghosted: true } : {}),
-      party,
-      wyrm: { name: w.wardenName, title: w.breed.title, color: w.breed.id },
-      ...(enc ? { combat: { monster: enc.monster.id, name: enc.monster.name, hp: enc.hp, maxHp: enc.monster.hp, round: enc.round } } : {}),
-      parley: { suspicion: this.wardenSuspicion, sealed: this.wardenLocked, ...(this.lastSaid ? { said: this.lastSaid } : {}), ...(this.lastReply ? { reply: this.lastReply } : {}) },
-    };
-  }
-
-  /** The buttons a player sees right now. Typing still works for everything. */
-  private actionsFor(id: string): ActionButton[] {
-    const out: ActionButton[] = [];
-    if (this.ended) return out;
-    const enc = this.encounter;
-    const castable = (pid: ProgramId) => (this.deck.get(pid) ?? 0) > 0;
-
-    if (enc) {
-      const done = enc.actions.has(id);
-      if (this.has(id, 'RUNNER')) out.push({ label: 'strike', cmd: 'strike', tone: 'fight', hint: 'd20+4, 1d8+2 damage' }, { label: 'flee', cmd: 'flee', tone: 'go', hint: 'escape to the last room' });
-      if (this.has(id, 'OPERATOR')) out.push({ label: 'bolt', cmd: 'bolt', tone: 'fight', hint: 'd20+3, 1d6+1 damage' }, { label: 'analyze', cmd: 'analyze', tone: 'info', hint: '+3 to hit for everyone' });
-      if (this.has(id, 'SENTRY')) out.push({ label: 'shield', cmd: 'shield', tone: 'magic', hint: 'halve the next hit' });
-      for (const pid of ['nova', 'mend', 'ghost'] as const) if (castable(pid)) out.push({ label: `cast ${pid}`, cmd: `cast ${pid}`, tone: 'magic', hint: PROGRAMS[pid].blurb });
-      out.push({ label: 'wait', cmd: 'wait', tone: 'info' });
-      return done ? out.map((b) => ({ ...b, disabled: true })) : out;
-    }
-
-    if (this.has(id, 'RUNNER')) {
-      const here = this.node();
-      for (const l of here.links) {
-        if (this.isOpen(l)) out.push({ label: `go ${l}`, cmd: `move ${l}`, tone: 'go' });
-        else if (l === VAULT) out.push({ label: 'crack vault', cmd: 'crack vault ', input: true, tone: 'risk', hint: 'type the 6-digit code' });
-        else out.push({ label: `crack ${l}`, cmd: `crack ${l} `, input: true, tone: 'risk', hint: 'type the port your mage reads out' });
-      }
-      if (this.runnerAt === this.world.gateId && !this.isOpen(VAULT) && !this.wardenLocked) {
-        out.push({ label: `talk to ${this.world.wardenName}`, cmd: 'talk ', input: true, tone: 'talk', hint: 'say anything. use what you found.' });
-      }
-      for (const f of here.files) {
-        out.push(f.program ? { label: `take ${f.name}`, cmd: `take ${f.name}`, tone: 'magic' } : { label: `read ${f.name}`, cmd: `cat ${f.name}`, tone: 'info' });
-      }
-      if (this.runnerAt === VAULT) out.unshift({ label: 'DOWNLOAD payload.dat', cmd: 'download', tone: 'go' });
-    }
-    if (this.has(id, 'SENTRY')) {
-      const ready = this.spoofReady();
-      out.push({ label: ready ? 'spoof · heal trace' : `spoof · ${this.spoofReadyAt - this.actions} moves`, cmd: 'spoof', tone: 'magic', disabled: !ready });
-    }
-    for (const pid of ['ghost', 'babel', 'mend'] as const) if (castable(pid)) out.push({ label: `cast ${pid}`, cmd: `cast ${pid}`, tone: 'magic', hint: PROGRAMS[pid].blurb });
-    if (castable('icepick')) out.push({ label: 'cast icepick', cmd: 'cast icepick ', input: true, tone: 'magic', hint: 'type a locked room next to the runner' });
-    return out;
-  }
-
-  private promptFor(id: string): string {
-    const fight = this.encounter ? c.red('⚔ ') : '';
-    if (this.has(id, 'RUNNER')) return `${fight}${c.green('runner')}@${c.bold(this.runnerAt)}> `;
-    if (this.has(id, 'SENTRY')) return `${fight}${c.yellow('sentry')}> `;
-    return `${fight}${c.cyan('operator')}> `;
   }
 
   private hudFor(id: string): HudState {
-    const w = this.world;
-    const party: HudMember[] = [...this.players.values()].map((p) => ({
-      handle: p.handle,
-      avatar: p.avatar ?? 0,
-      classes: [...(this.roles.get(p.id) ?? [])].map((r) => CLASS_OF[r]),
-      you: p.id === id,
-      ...(this.encounter ? { ready: this.encounter.actions.has(p.id) } : {}),
-    }));
     return {
       mode: 'delve',
       code: this.opts.code ?? '',
-      corp: w.corp,
-      district: w.district.split(',')[0]!,
-      wyrm: { name: w.wardenName, title: w.breed.title, color: w.breed.id },
-      trace: this.trace,
-      party,
-      deck: [...this.deck].filter(([, n]) => n > 0).map(([pid, n]) => ({ name: PROGRAMS[pid].file, charges: n })),
-      location: this.runnerAt,
-      ...(this.encounter
-        ? { encounter: { name: this.encounter.monster.name, hp: this.encounter.hp, maxHp: this.encounter.monster.hp, round: this.encounter.round } }
+      wyrm: this.wyrmInfo(),
+      corruption: this.corruption,
+      floor: this.floor,
+      floors: NUM.floors,
+      seals: this.seals,
+      party: this.party(id),
+      relics: [...this.relics].map((r) => RELICS[r]),
+    };
+  }
+
+  private foeView(): Foe | undefined {
+    const f = this.foe;
+    if (!f) return undefined;
+    return {
+      id: f.spec.id,
+      name: f.name,
+      hp: f.hp,
+      maxHp: f.maxHp,
+      intent: this.displayIntent(),
+      ...(f.exposed ? { exposed: true } : {}),
+      ...(f.elite ? { elite: true } : {}),
+      ...(f.boss ? { boss: true } : {}),
+    };
+  }
+
+  private displayIntent(): Intent {
+    const f = this.foe!;
+    const base = intentOf(f.intent);
+    if (!f.enraged || f.intent.kind === 'shell' || f.intent.kind === 'charge') return base;
+    const amount = f.intent.amount + f.enraged;
+    return { ...base, amount, label: `${f.intent.verb} ${amount}`, hint: `${base.hint} (enraged +${f.enraged})` };
+  }
+
+  private sceneFor(id: string): SceneState {
+    const view = this.phase === 'combat' ? 'combat' : this.phase === 'boss' ? 'boss' : 'route';
+    const handles = new Map([...this.players.values()].map((p) => [p.id, p.handle]));
+    const foe = this.foeView();
+    return {
+      view,
+      floor: this.floor,
+      floors: NUM.floors,
+      corruption: this.corruption,
+      seals: this.seals,
+      party: this.party(id),
+      wyrm: this.wyrmInfo(),
+      path: [...this.path],
+      ...(view === 'route'
+        ? { options: this.options.map((o) => ({ ...o, votes: [...this.votes].filter(([, v]) => v === o.id).map(([pid]) => handles.get(pid) ?? '?') })) }
         : {}),
-      ...(this.lastRoll ? { lastRoll: this.lastRoll } : {}),
+      ...(foe ? { foe, round: this.round } : {}),
+      ...(view === 'boss' ? { parley: { ...this.parley } } : {}),
     };
   }
 
-  private brief(p: GamePlayer) {
-    const w = this.world;
-    const lines = [
-      '',
-      c.bold(`THE DELVE // ${w.corp} · ${w.district.split(',')[0]}`),
-      `steal ${c.green('payload.dat')} from ${c.red(w.wardenName)}'s hoard. trace 100% = flatlined.`,
-      ...[...(this.roles.get(p.id) ?? [])].map((r) => this.roleBrief(r)),
-      c.dim('use the buttons, click rooms on the map, or type. anything else you type is crew chat.'),
-    ];
-    p.send(lines.join('\n'));
-  }
-
-  private roleBrief(role: Role): string {
-    switch (role) {
-      case 'RUNNER':
-        return `${ROLE_COLOR.RUNNER('you are the ROGUE')}: you walk the dungeon, but you can only see where you've been. ask your crew.`;
-      case 'OPERATOR':
-        return `${ROLE_COLOR.OPERATOR('you are the MAGE')}: your map shows every lock's port, the intel and the monster lairs. guide the rogue.`;
-      case 'SENTRY':
-        return `${ROLE_COLOR.SENTRY('you are the CLERIC')}: you alone see the hunting patrol (the red eye). warn the rogue, and heal trace.`;
+  private actionsFor(id: string): ActionButton[] {
+    if (this.phase === 'ended') return [];
+    if (this.phase === 'route') {
+      const mine = this.votes.get(id);
+      return this.options.map((o, i) => ({
+        label: `${mine === o.id ? '✓ ' : ''}${i + 1}. ${o.label}`,
+        cmd: `vote ${i + 1}`,
+        tone: o.kind === 'boss' ? 'fight' : o.kind === 'shrine' ? 'magic' : o.kind === 'cache' ? 'talk' : 'go',
+        hint: o.detail,
+        group: 'vote',
+      }));
     }
-  }
-
-  private roleCommands(role: Role): string {
-    const cmds: Record<Role, [string, string][]> = {
-      RUNNER: [
-        ['ls', 'look around the room'],
-        ['cat <file>', 'read a file'],
-        ['take <program>', 'pocket a program into the party deck'],
-        ['move <node>', 'go to a linked room'],
-        ['crack <node> <port>', 'pick a locked node (d20; your mage has the port)'],
-        ['crack vault <code>', 'the 6-digit code from the three fragments'],
-        ['talk <message>', `parley with ${this.world.wardenName} (from the room next to the vault)`],
-        ['download', 'take the payload (inside the vault)'],
-        ['strike · flee', 'in combat'],
-      ],
-      OPERATOR: [
-        ['map', 'the schematic: rooms, ports, intel, lairs, the runner'],
-        ['bolt · analyze', 'in combat'],
-      ],
-      SENTRY: [
-        ['logs', 'the patrol, trace and recent events'],
-        ['spoof', 'scrub 1d8+8 trace (recharges)'],
-        ['shield', 'in combat'],
-      ],
-    };
-    return cmds[role].map(([k, v]) => `  ${ROLE_COLOR[role](k.padEnd(22))}${c.dim(v)}`).join('\n');
+    const out: ActionButton[] = [];
+    const used = this.acted.get(id) ?? new Set<ClassId>();
+    for (const cls of this.classes.get(id) ?? []) {
+      for (const move of CLASS_MOVES[cls]) {
+        const spec = MOVES[move];
+        out.push({ label: spec.label, cmd: move, tone: spec.tone, hint: spec.hint, group: CLASS_NAME[cls], disabled: used.has(cls) });
+      }
+    }
+    if (this.phase === 'boss') {
+      const free = (this.classes.get(id) ?? []).some((cl) => !used.has(cl));
+      out.push({ label: `Speak to ${this.wyrmName}`, cmd: 'speak ', input: true, tone: 'talk', hint: `${MOVES.speak.hint} It ${this.breed.temperament}.`, group: 'or', disabled: !free });
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------- input
 
   handle(id: string, rawLine: string) {
     const p = this.players.get(id);
-    if (!p || this.ended) return;
+    if (!p || this.phase === 'ended') return;
     const line = rawLine.trim();
     if (!line) return;
-
-    if (line.startsWith("'") || line.startsWith('"')) return this.say(p, line.slice(1));
     const [head = '', ...rest] = line.split(/\s+/);
     const cmd = head.toLowerCase();
-    const arg = rest.join(' ');
 
-    if (this.encounter && (cmd in COMBAT_VERBS || cmd === 'cast')) return this.combatAction(p, cmd, rest);
-
-    const needed = COMMAND_ROLE[cmd];
-    if (needed && !this.has(id, needed)) {
-      const who = this.holdersOf(needed).map((q) => q.handle).join(' / ') || 'nobody';
-      return p.send(c.dim(`that's the ${needed}'s job (${who}). tell them:  say <message>`));
-    }
-    if (this.encounter && RUNNER_BLOCKED_IN_COMBAT.has(cmd)) {
-      return p.send(c.red(`the ${this.encounter.monster.name} is on you. fight: ${this.encounter.menuFor(p)}`));
+    if (cmd === 'say' || line.startsWith("'")) return this.say(p, line.startsWith("'") ? line.slice(1) : rest.join(' '));
+    if (cmd === 'help') return this.help(p);
+    if (cmd === 'relics') return p.send([...this.relics].map((r) => `  ${c.magenta(RELICS[r].name)} ${c.dim(RELICS[r].desc)}`).join('\n') || c.dim('no relics yet.'));
+    if (cmd === 'party' || cmd === 'crew') {
+      return p.send([...this.players.values()].map((q) => `  ${q.handle.padEnd(14)} ${(this.classes.get(q.id) ?? []).map((cl) => CLASS_COLOR[cl](CLASS_NAME[cl])).join(' + ')}`).join('\n'));
     }
 
-    switch (cmd) {
-      case 'say': return this.say(p, arg);
-      case 'help': return this.help(p);
-      case 'crew': case 'who': case 'party':
-        return p.send([...this.players.values()].map((q) => `  ${q.handle.padEnd(16)} ${this.roleTag(q.id)}`).join('\n'));
-      case 'ls': case 'look': return this.look(p);
-      case 'cat': return this.cat(p, arg);
-      case 'take': return this.take(p, arg);
-      case 'move': case 'cd': return this.move(p, arg);
-      case 'crack': return this.crack(p, rest[0], rest[1]);
-      case 'talk': return void this.talk(p, arg);
-      case 'download': return this.download(p);
-      case 'map': return this.map(p);
-      case 'logs': return this.logs(p);
-      case 'spoof': return this.spoof(p);
-      case 'deck': return this.showDeck(p);
-      case 'cast': return this.cast(p, rest[0], rest[1]);
-      case 'bestiary': return this.bestiary(p);
-      case 'trace': return p.send(`trace: ${traceColor(this.trace)(`${this.trace}%`)}`);
-      default:
-        if (cmd in COMBAT_VERBS) return p.send(c.dim('nothing to fight here.'));
-        return this.say(p, line);
+    if (this.phase === 'route' && (cmd === 'vote' || cmd === 'go' || /^\d$/.test(cmd))) return this.vote(p, /^\d$/.test(cmd) ? cmd : rest[0]);
+    if ((this.phase === 'combat' || this.phase === 'boss') && cmd in MOVES) {
+      if (cmd === 'speak') return void this.speak(p, rest.join(' '));
+      return this.act(p, cmd as Move);
     }
+    return this.say(p, line);
   }
 
   private help(p: GamePlayer) {
-    const lines = [...(this.roles.get(p.id) ?? [])].map((r) => this.roleCommands(r));
-    lines.push(c.dim('  say <msg> · party · deck · cast <program> [target] · bestiary · leave'));
-    if (this.encounter) lines.push(`${c.red('in combat:')} ${this.encounter.menuFor(p)}`);
-    p.send(lines.join('\n'));
+    p.send(
+      [
+        c.bold('how to play'),
+        `  each foe shows its ${c.bold('next move')} above its head. answer it before it lands.`,
+        `  ${c.yellow('Ward')} blocks an attack · ${c.cyan('Hex')} interrupts a charge and makes ${c.red('Strike')} hit double · ${c.cyan('Bolt')} pierces a shell · ${c.yellow('Mend')} cleanses corruption.`,
+        `  between fights, vote on the way down. every foe you beat ${c.bold('weakens the Devourer')} (seals).`,
+        `  in the final fight anyone can ${c.bold('speak')} to the wyrm instead of attacking. it ${this.breed.temperament}.`,
+        c.dim('  anything else you type is crew chat.'),
+      ].join('\n'),
+    );
   }
 
   private say(p: GamePlayer, text: string) {
     const msg = text.trim();
-    if (!msg) return;
-    this.broadcast(`${c.magenta(`[${p.handle}]`)} ${msg}`);
+    if (msg) this.broadcast(`${c.magenta(`[${p.handle}]`)} ${msg}`);
   }
 
-  // ---------------------------------------------------------------- runner
+  // ---------------------------------------------------------------- route
 
-  private node(id: string = this.runnerAt): NetNode {
-    return this.world.nodes.get(id)!;
-  }
-
-  private isOpen(id: string) {
-    return !this.node(id).locked || this.unlocked.has(id);
-  }
-
-  private look(p: GamePlayer) {
-    const n = this.node();
-    const links = n.links.map((l) => (this.isOpen(l) ? c.bold(l) : `${l} ${c.red('[LOCKED]')}`));
-    const files = n.files.map((f) => (f.program ? c.magenta(f.name) : f.name));
-    p.send(
-      [
-        `${c.green('▸')} ${c.bold(n.id)} ${c.dim(`· ${n.label}`)}${files.length ? ` ${c.dim('· files:')} ${files.join(' ')}` : ''}`,
-        `  ${c.dim('links:')} ${links.join('  ')}`,
-      ].join('\n'),
-    );
-  }
-
-  private findFile(name: string) {
-    return this.node().files.find((f) => f.name.toLowerCase() === name.toLowerCase());
-  }
-
-  private cat(p: GamePlayer, name: string) {
-    const file = this.findFile(name);
-    if (!file) return p.send(c.dim(name ? `no file '${name}' here. try ls.` : 'usage: cat <file>'));
-    p.send(`${c.dim(`--- ${file.name} ---`)}\n${file.body}\n${c.dim(file.program ? `--- (take ${file.name} to add it to the deck)` : '---')}`);
-    this.addTrace(RULES.catCost, `read ${file.name}`);
-  }
-
-  private take(p: GamePlayer, name: string) {
-    const file = this.findFile(name) ?? this.node().files.find((f) => f.program && programByName(name)?.id === f.program);
-    if (!file?.program) return p.send(c.dim(name ? `nothing called '${name}' you can take here.` : 'usage: take <program>'));
-    const n = this.node();
-    n.files = n.files.filter((f) => f !== file);
-    this.addToDeck(file.program, `${p.handle} pocketed`);
-  }
-
-  private addToDeck(id: ProgramId, how: string) {
-    const spec = PROGRAMS[id];
-    this.deck.set(id, (this.deck.get(id) ?? 0) + spec.charges);
-    this.emit({ kind: 'loot', name: spec.file });
-    this.broadcast(c.magenta(`✦ ${how} ${spec.file} (${spec.charges} charge${spec.charges > 1 ? 's' : ''}): ${spec.blurb}`));
+  private openRoute() {
+    this.phase = 'route';
+    this.foe = undefined;
+    this.votes.clear();
+    this.options = this.rollOptions();
+    const lines = this.options.map((o, i) => `  ${c.bold(`${i + 1}.`)} ${o.label} ${c.dim(`· ${o.detail}`)}`);
+    this.broadcast(['', c.bold(this.floor === NUM.floors ? 'THE BOTTOM · the Devourer waits' : `FLOOR ${this.floor} of ${NUM.floors - 1} · choose the way down`), ...lines].join('\n'));
     this.refresh();
+    this.startTimer(this.opts.voteMs ?? 25_000, () => this.resolveVote(true));
   }
 
-  private move(p: GamePlayer, target: string) {
-    const to = target.toLowerCase();
-    const here = this.node();
-    if (!to) return p.send(c.dim(`usage: move <node>. links: ${here.links.join(', ')}`));
-    if (!here.links.includes(to)) return p.send(c.dim(`no link to '${to}' from here. links: ${here.links.join(', ')}`));
-    if (!this.isOpen(to)) {
-      return p.send(
-        to === VAULT
-          ? c.red(`the vault is sealed. crack vault <6-digit code>, or talk ${this.world.wardenName} into opening it.`)
-          : c.red(`ICE wall on ${to}. crack ${to} <port>. your mage has the port.`),
-      );
-    }
-    this.prevAt = this.runnerAt;
-    this.runnerAt = to;
-    const firstVisit = !this.visited.has(to);
-    this.visited.add(to);
-    this.emit({ kind: 'move', from: this.prevAt, to });
-    this.look(p);
-    // The monster's intro narrates lairs, so the DM only sets the scene for quiet rooms.
-    if (firstVisit && to !== VAULT && !this.lairs.has(to)) this.narrate({ kind: 'enter', node: to, label: this.node(to).label, corp: this.world.corp });
-    if (firstVisit && to === this.world.gateId && !this.isOpen(VAULT)) {
-      this.broadcast(c.red(this.world.breed.arrival.replace('{name}', this.world.wardenName)));
-    }
-    if (this.ghostMoves > 0) this.ghostMoves--;
+  private rollOptions(): RouteOption[] {
+    this.optionFoes.clear();
+    const used = new Set<string>(this.lastFoe ? [this.lastFoe] : []);
+    const make = (kind: RouteKind, i: number): RouteOption => {
+      const id = `${this.floor}-${i}`;
+      if (kind !== 'fight' && kind !== 'elite') return { id, kind, ...ROOM_INFO[kind], votes: [] };
+      // show exactly which horror waits behind this door
+      const spec = this.rng.pick(FOES.filter((f) => !used.has(f.id)));
+      used.add(spec.id);
+      this.optionFoes.set(id, spec);
+      const name = kind === 'elite' ? `Dread ${spec.name.replace(/^The /, '')}` : spec.name;
+      return { id, kind, label: name, detail: ROOM_INFO[kind].detail, votes: [], foe: spec.id };
+    };
+    if (this.floor === NUM.floors) return [make('boss', 0)];
+    if (this.floor === 1) return [make('fight', 0), make('fight', 1)];
+    const pool: RouteKind[] = ['fight', 'fight', 'fight', 'shrine', 'shrine', 'cache', 'cache', ...(this.floor >= 3 ? (['elite', 'elite'] as RouteKind[]) : [])];
+    const a = this.rng.pick(pool);
+    let b = this.rng.pick(pool);
+    for (let i = 0; i < 8 && b === a && a !== 'fight'; i++) b = this.rng.pick(pool);
+    return [make(a, 0), make(b, 1)];
+  }
 
-    if (this.patrolAt === to && this.ghostMoves === 0) {
-      const r = this.check(p.handle, 'sneaks past the hunting patrol', RULES.rogueBonus, RULES.stealthDc);
-      if (passed(r.outcome)) {
-        this.broadcast(c.green(`>> the patrol sweeps right past ${p.handle}.`));
-        this.addTrace(RULES.moveCost, `hop to ${to}`);
-      } else {
-        this.broadcast(c.red(`!! ${p.handle} walked straight into the ICE patrol on ${to}`));
-        this.emit({ kind: 'alarm' });
-        this.emit({ kind: 'hurt', amount: RULES.patrolHitCost });
-        this.addTrace(RULES.patrolHitCost, `patrol contact on ${to}`);
+  private vote(p: GamePlayer, arg?: string) {
+    const option = this.options[Number(arg) - 1];
+    if (!option) return p.send(c.dim(this.options.length > 1 ? 'vote 1 or vote 2' : 'vote 1'));
+    this.votes.set(p.id, option.id);
+    this.emit({ kind: 'vote', by: p.handle });
+    this.broadcast(c.dim(`   ${p.handle} votes for ${option.label}`));
+    this.refresh();
+    if (this.votes.size >= this.players.size) this.resolveVote(false);
+  }
+
+  private resolveVote(timedOut: boolean) {
+    if (this.phase !== 'route') return;
+    this.clearTimer();
+    const tally = this.options.map((o) => ({ o, n: [...this.votes.values()].filter((v) => v === o.id).length }));
+    const best = Math.max(...tally.map((t) => t.n));
+    const leaders = tally.filter((t) => t.n === best).map((t) => t.o);
+    const chosen = leaders.length === 1 ? leaders[0]! : this.rng.pick(leaders);
+    if (leaders.length > 1) this.broadcast(c.dim(`   ${timedOut && best === 0 ? 'no votes' : 'a tie'}: fate picks ${chosen.label}.`));
+    this.enter(chosen.kind, this.optionFoes.get(chosen.id));
+  }
+
+  private enter(kind: RouteKind, foe?: FoeSpec) {
+    this.path.push(kind);
+    this.emit({ kind: 'enter', room: kind });
+    switch (kind) {
+      case 'shrine': {
+        const before = this.corruption;
+        this.corruption = Math.max(0, this.corruption - NUM.shrineHeal);
+        this.broadcast(c.green(`✦ a quiet shrine. the crew rests: corruption ${before}% → ${this.corruption}%.`));
+        this.emit({ kind: 'heal', amount: before - this.corruption });
+        return this.nextFloor();
       }
+      case 'cache':
+        this.grantRelic('the cache held');
+        return this.nextFloor();
+      case 'boss':
+        return this.startFight(true, false);
+      default:
+        return this.startFight(false, kind === 'elite', foe);
+    }
+  }
+
+  private nextFloor() {
+    this.floor++;
+    this.openRoute();
+  }
+
+  private grantRelic(how: string) {
+    const free = RELIC_IDS.filter((r) => !this.relics.has(r));
+    if (!free.length) {
+      this.corruption = Math.max(0, this.corruption - 10);
+      this.broadcast(c.green(`✦ ${how} nothing new, but the crew cleanses 10% corruption.`));
+      return;
+    }
+    const r = this.rng.pick(free);
+    this.relics.add(r);
+    this.emit({ kind: 'relic', name: RELICS[r].name });
+    this.broadcast(c.magenta(`✦ ${how} ${c.bold(RELICS[r].name)}: ${RELICS[r].desc}`));
+  }
+
+  // ---------------------------------------------------------------- combat
+
+  private startFight(boss: boolean, elite: boolean, chosen?: FoeSpec) {
+    const scale = (this.players.size >= 4 ? 1.25 : 1) * NUM.foeHp;
+    const harden = (p: IntentSpec[], mult: number) => p.map((st) => ({ ...st, amount: Math.round(st.amount * mult * NUM.foeDmg) }));
+    let spec: FoeSpec;
+    let hp: number;
+    if (boss) {
+      spec = { ...BOSS, name: this.wyrmName, pattern: harden(BOSS.pattern, 1) };
+      hp = Math.round(BOSS.hp * scale * (1 - Math.min(this.seals, NUM.maxSeals) * NUM.sealCut));
     } else {
-      this.addTrace(RULES.moveCost, `hop to ${to}`);
+      spec = chosen ?? this.rng.pick(FOES.filter((f) => f.id !== this.lastFoe));
+      this.lastFoe = spec.id;
+      spec = { ...spec, pattern: harden(spec.pattern, elite ? 1.3 : 1), ...(elite ? { name: `Dread ${spec.name.replace(/^The /, '')}` } : {}) };
+      hp = Math.round(spec.hp * scale * (elite ? 1.5 : 1));
     }
+    this.foe = { spec, name: spec.name, hp, maxHp: hp, step: 0, intent: spec.pattern[0]!, exposed: this.relics.has('eye'), enraged: 0, elite, boss };
+    this.phase = boss ? 'boss' : 'combat';
+    this.round = 1;
+    this.queued = [];
+    this.acted.clear();
+    this.parley = {};
+    this.parleyHistory = [];
+    this.broadcast(['', c.red(c.bold(`${boss ? '☠ THE DEVOURER' : elite ? '☠ DREAD LAIR' : '⚔ HAUNTED NODE'} // ${spec.name.toUpperCase()}`)), c.italic(spec.intro)].join('\n'));
+    if (boss) {
+      const n = Math.min(this.seals, NUM.maxSeals);
+      this.broadcast(c.dim(`your ${n} seal${n === 1 ? '' : 's'} weakened it to ${hp} HP. it ${this.breed.temperament}: anyone can speak to it instead of attacking.`));
+    }
+    this.announceRound();
+  }
+
+  private announceRound() {
+    const f = this.foe!;
+    const it = this.displayIntent();
+    this.broadcast(`${c.red(`ROUND ${this.round}`)} · ${f.name} ${f.hp}/${f.maxHp} HP · next move: ${c.bold(it.label)} ${c.dim(`(${it.hint})`)}${f.exposed ? c.cyan(' · EXPOSED') : ''}`);
     this.refresh();
-    this.tick();
-    this.maybeStartEncounter();
+    this.startTimer(this.opts.roundMs ?? 40_000, () => this.forceResolve());
   }
 
-  private maybeStartEncounter() {
-    const lair = this.lairs.get(this.runnerAt);
-    if (!lair || this.ended || this.encounter) return;
-    this.encounter = new Encounter(this.combatHost(), lair.spec, this.runnerAt, this.opts.roundMs ?? 30_000, lair.hp);
-    this.encounter.start();
+  private isReady(id: string) {
+    const used = this.acted.get(id);
+    return (this.classes.get(id) ?? []).every((cl) => used?.has(cl));
   }
 
-  private crack(p: GamePlayer, rawTarget?: string, guess?: string) {
-    const target = rawTarget?.toLowerCase();
-    if (!target || !guess) return p.send(c.dim('usage: crack <node> <port>   or   crack vault <6-digit code>'));
-    if (!this.node().links.includes(target)) return p.send(c.dim(`'${target}' isn't linked to this room.`));
-    if (this.isOpen(target)) return p.send(c.dim(`${target} is already open.`));
-
-    const n = this.node(target);
-    if (target === VAULT) {
-      if (guess === this.world.passcode) {
-        this.unlocked.add(VAULT);
-        this.emit({ kind: 'unlock', node: VAULT });
-        this.broadcast(c.green(`>> the vault's seals turn over one by one. the hoard is open. move vault.`));
-        this.addTrace(RULES.crackCostPerSecurity * n.security, 'vault code accepted');
-      } else {
-        this.broadcast(c.red(`!! wrong vault code. ${this.world.wardenName} stirs.`));
-        this.emit({ kind: 'alarm' });
-        this.addTrace(RULES.crackWrongPortCost, 'wrong vault code');
-      }
-      return this.tick();
+  private act(p: GamePlayer, move: Move) {
+    const cls = MOVES[move].cls as ClassId;
+    if (!(this.classes.get(p.id) ?? []).includes(cls)) {
+      const who = [...this.players.values()].filter((q) => this.classes.get(q.id)?.includes(cls)).map((q) => q.handle).join(' / ');
+      return p.send(c.dim(`${MOVES[move].label} is the ${CLASS_NAME[cls]}'s move (${who || 'nobody'}).`));
     }
-    if (guess !== String(n.port)) {
-      this.broadcast(c.red(`!! ${guess} is not ${target}'s true name. the ICE noticed.`));
-      this.emit({ kind: 'alarm' });
-      this.addTrace(RULES.crackWrongPortCost, `wrong port on ${target}`);
-      return this.tick();
-    }
-
-    const r = this.check(p.handle, `picks the lock on ${target}`, RULES.rogueBonus, 8 + 2 * n.security);
-    if (passed(r.outcome)) this.emit({ kind: 'unlock', node: target });
-    if (r.outcome === 'crit') {
-      this.unlocked.add(target);
-      this.broadcast(c.green(`>> ${target} opens without a sound. not a single log line.`));
-    } else if (r.outcome === 'success') {
-      this.unlocked.add(target);
-      this.broadcast(c.green(`>> ${target} cracked. ICE wall down.`));
-      this.addTrace(RULES.crackCostPerSecurity * n.security, `cracked ${target}`);
-    } else if (r.outcome === 'fail') {
-      this.broadcast(c.yellow(`>> the lock on ${target} resists. try again.`));
-      this.addTrace(RULES.crackSlipCost, `lock resisted on ${target}`);
-    } else {
-      this.broadcast(c.red(`!! the pick snaps inside ${target}'s lock. alarms. the patrol is coming.`));
-      this.emit({ kind: 'alarm' });
-      if (target !== VAULT && this.world.middle.includes(target)) this.patrolAt = target;
-      this.toRole('SENTRY', c.yellow(`   ICE patrol rushed to ${this.patrolAt}`));
-      this.addTrace(RULES.crackFumbleCost, `fumbled crack on ${target}`);
-    }
-    this.tick();
-  }
-
-  private async talk(p: GamePlayer, message: string) {
-    const w = this.world;
-    if (!message) return p.send(c.dim('usage: talk <message>'));
-    if (this.runnerAt !== w.gateId || this.isOpen(VAULT)) return p.send(c.dim('nobody here is listening.'));
-    if (this.wardenLocked) return p.send(c.red(`${w.wardenName} has sealed itself off. only the code will open the vault now.`));
-    if (this.wardenBusy) return p.send(c.dim(`${w.wardenName} is still composing its contempt. wait.`));
-
-    this.wardenBusy = true;
-    this.lastSaid = message;
-    this.broadcast(`${c.green(`${p.handle} → ${w.wardenName}:`)} ${message}`);
+    const used = this.acted.get(p.id) ?? new Set<ClassId>();
+    if (used.has(cls)) return p.send(c.dim(`your ${CLASS_NAME[cls]} already acted this round.`));
+    used.add(cls);
+    this.acted.set(p.id, used);
+    this.queued.push({ player: p.id, cls, move });
+    this.broadcast(c.dim(`   ${p.handle} readies ${MOVES[move].label}`));
     this.refresh();
-    intelMentioned(message, w.intel).forEach((k) => this.mentioned.add(k));
+    this.checkReady();
+  }
+
+  private async speak(p: GamePlayer, text: string) {
+    if (this.phase !== 'boss') return p.send(c.dim('only the Devourer is worth talking to.'));
+    if (!text) return p.send(c.dim('speak <what you say to the wyrm>'));
+    const used = this.acted.get(p.id) ?? new Set<ClassId>();
+    const cls = (this.classes.get(p.id) ?? []).find((cl) => !used.has(cl));
+    if (!cls) return p.send(c.dim('you already acted this round.'));
+    used.add(cls);
+    this.acted.set(p.id, used);
+    this.pendingSpeech++;
+    const message = text.slice(0, 280);
+    this.parley = { said: message, saidBy: p.handle };
+    this.broadcast(`${c.green(`${p.handle} → ${this.wyrmName}:`)} ${message}`);
+    this.refresh();
 
     let verdict;
     try {
-      verdict = await this.opts.warden.respond({
-        context: { wardenName: w.wardenName, corp: w.corp, intel: w.intel, breed: w.breed },
-        history: this.wardenHistory,
-        message,
-        suspicion: this.wardenSuspicion,
-        mentioned: this.mentioned,
-      });
-    } catch (err) {
-      verdict = { reply: `${w.wardenName}: ...static...`, suspicion: this.wardenSuspicion, grant: false };
-      console.warn(`[warden] respond failed: ${(err as Error).message}`);
-    } finally {
-      this.wardenBusy = false;
+      verdict = await this.opts.judge.judge({ wyrmName: this.wyrmName, breed: this.breed }, this.parleyHistory, message);
+    } catch {
+      verdict = { reply: `${this.wyrmName}: ...`, score: 0 };
     }
-    if (this.ended) return;
-
-    // Breed rules the server enforces regardless of what the model says.
-    let suspicion = verdict.suspicion;
-    if (w.breed.id === 'black') suspicion = Math.max(suspicion, this.wardenPeak - RULES.blackGrudgeSlack);
-    if (w.breed.id === 'black' && INJECTION.test(message)) suspicion = 100;
-    this.wardenPeak = Math.max(this.wardenPeak, suspicion);
-    this.wardenSuspicion = suspicion;
-
-    this.lastReply = verdict.reply;
-    this.wardenHistory.push({ from: 'runner', text: message }, { from: 'warden', text: verdict.reply });
-    this.wardenHistory = this.wardenHistory.slice(-RULES.historyLimit);
+    this.pendingSpeech--;
+    if (this.phase !== 'boss') return;
+    this.parleyHistory = [...this.parleyHistory, { from: 'crew' as const, text: message }, { from: 'wyrm' as const, text: verdict.reply }].slice(-10);
+    const amount = Math.min(NUM.speechCap, Math.round(Math.max(0, verdict.score) * 1.5));
+    this.queued.push({ player: p.id, cls, move: 'speak', amount: verdict.score < 0 ? -1 : amount });
+    this.parley = { said: message, saidBy: p.handle, reply: verdict.reply, mood: verdict.score >= 4 ? 'calmer' : verdict.score < 0 ? 'angrier' : 'same' };
     this.broadcast(c.red(verdict.reply));
-
-    if (verdict.whisper && w.breed.id === 'green') {
-      const others = [...this.players.values()].filter((q) => q.id !== p.id);
-      const target = others.length ? this.rng.pick(others) : undefined;
-      target?.send(c.green(c.italic(`(a private whisper from ${w.wardenName}) ${verdict.whisper}`)));
-    }
-
-    const needsTicket = w.breed.id === 'blue' && !this.mentioned.has('ticket');
-    const verified = this.mentioned.size >= RULES.grantIntelNeeded && !needsTicket && suspicion < RULES.grantMaxSuspicion;
-    if (verdict.grant && verified) {
-      this.unlocked.add(VAULT);
-      this.emit({ kind: 'unlock', node: VAULT });
-      this.broadcast(c.green(`>> ${w.wardenName} uncoils from the vault link. move vault.`));
-      this.log(`wyrm granted passage (suspicion ${suspicion}%)`);
-    } else if (verdict.grant) {
-      this.broadcast(c.dim(`[ICE] the vault's verification seal refuses. ${w.wardenName} looks embarrassed.`));
-    }
-    this.toRole('SENTRY', c.yellow(`   wyrm suspicion: ${suspicion}%`));
-
-    if (suspicion >= 100) {
-      this.wardenLocked = true;
-      this.broadcast(c.red(`!! ${w.wardenName} roars and seals itself off. it has your scent now.`));
-      this.emit({ kind: 'alarm' });
-      this.addTrace(RULES.lockoutCost, 'wyrm lockout');
-    } else {
-      this.addTrace(RULES.talkCost + (suspicion > 70 ? 5 : 0), 'parley with the wyrm');
-    }
-    this.tick();
-  }
-
-  private download(p: GamePlayer) {
-    if (this.runnerAt !== VAULT) return p.send(c.dim('nothing to download here. the payload is in the vault.'));
-    this.end(true, `${p.handle} pulled payload.dat out of ${this.world.wardenName}'s hoard`);
-  }
-
-  // ---------------------------------------------------------------- operator
-
-  private map(p: GamePlayer) {
-    const w = this.world;
-    const order = [GATEWAY, ...w.middle, VAULT];
-    const lines = [c.cyan(`SCHEMATIC // ${w.corp}`)];
-    for (const id of order) {
-      const n = this.node(id);
-      let lock = '';
-      if (id === VAULT) lock = this.isOpen(id) ? c.green(' [OPEN]') : c.red(` [6-digit code | ${w.wardenName}'s leave]`);
-      else if (n.locked) lock = this.isOpen(id) ? c.green(' [cracked]') : c.red(` [LOCKED port ${n.port}]`);
-      const intel = n.files.filter((f) => f.intel).map((f) => c.yellow(` ◆ ${INTEL_LABEL[f.intel!]}`)).join('');
-      const progs = n.files.some((f) => f.program) ? c.magenta(' ✦ program cache') : '';
-      const lair = this.lairs.get(id);
-      const ice = lair ? c.red(` ☠ ${lair.spec.name}`) : '';
-      const here = this.runnerAt === id ? c.green(' ◀ runner') : '';
-      lines.push(`  ${c.bold(id)}${lock}${intel}${progs}${ice}${here}`, c.dim(`    └─ links: ${n.links.join(', ')}`));
-    }
-    p.send(lines.join('\n'));
-  }
-
-  // ---------------------------------------------------------------- sentry
-
-  private logs(p: GamePlayer) {
-    const near = this.node().links.includes(this.patrolAt);
-    p.send(
-      [
-        `${c.yellow('HUNTING PATROL')} @ ${c.bold(this.patrolAt)}${this.patrolAt === this.runnerAt ? c.red('  (ON THE RUNNER)') : near ? c.red('  (next to the runner)') : ''}${this.ghostMoves ? c.magenta(`  · runner ghosted for ${this.ghostMoves} moves`) : ''}`,
-        `trace ${traceColor(this.trace)(`${this.trace}%`)} · wyrm suspicion ${this.wardenSuspicion}% · spoof ${this.spoofReady() ? c.green('ready') : c.dim(`recharging (${this.spoofReadyAt - this.actions} runner actions)`)}`,
-        ...this.iceLog.slice(-6).map((l) => c.dim(`  ${l}`)),
-      ].join('\n'),
-    );
-  }
-
-  private spoofReady() {
-    return this.actions >= this.spoofReadyAt;
-  }
-
-  private spoof(p: GamePlayer) {
-    if (this.encounter) return p.send(c.dim('no time to spoof mid-fight. shield instead.'));
-    if (!this.spoofReady()) return p.send(c.dim(`spoof coil recharging: ${this.spoofReadyAt - this.actions} more runner actions.`));
-    this.spoofReadyAt = this.actions + RULES.spoofCooldown;
-    const natural = this.dice.d(8);
-    const amount = natural + RULES.spoofBase;
-    const text = `${c.yellow('⚂')} ${c.bold(p.handle)} channels a ghost signal: d8 ${c.bold(natural)} + ${RULES.spoofBase} = ${c.green(`${amount}% trace scrubbed`)}`;
-    this.lastRoll = stripAnsi(text);
-    for (const q of this.players.values()) q.showRoll({ sides: 8, natural, text, outcome: 'success', caption: `${p.handle} · ghost signal · heal` });
-    this.emit({ kind: 'heal', amount });
-    this.addTrace(-amount, 'spoofed');
-  }
-
-  // ---------------------------------------------------------------- deck & combat
-
-  private showDeck(p: GamePlayer) {
-    const held = [...this.deck].filter(([, n]) => n > 0);
-    if (held.length === 0) return p.send(c.dim('the deck is empty. the runner can take programs found in rooms, and slain ICE drops them.'));
-    p.send(held.map(([id, n]) => `  ${c.magenta(PROGRAMS[id].file.padEnd(13))} ×${n}  ${c.dim(PROGRAMS[id].blurb)}`).join('\n'));
-  }
-
-  private cast(p: GamePlayer, name?: string, target?: string) {
-    const spec = name ? programByName(name) : undefined;
-    if (!spec) return p.send(c.dim('usage: cast <program> [target]. see: deck'));
-    if (!this.deck.get(spec.id)) return p.send(c.dim(`no ${spec.file} charges in the deck.`));
-    if (spec.combatOnly) return p.send(c.dim(`${spec.file} only works in a fight.`));
-
-    switch (spec.id) {
-      case 'ghost':
-        this.ghostMoves = RULES.ghostMoves;
-        this.broadcast(c.magenta(`✦ ${p.handle} runs ghost.exe. the runner fades from the patrol's senses for ${RULES.ghostMoves} moves.`));
-        break;
-      case 'babel': {
-        const unused = (['admin', 'ticket', 'pet'] as IntelKey[]).filter((k) => !this.mentioned.has(k)).map((k) => INTEL_KEY_LABEL[k]);
-        this.broadcast(
-          [
-            c.magenta(`✦ ${p.handle} runs babel.dll. ${this.world.wardenName}'s code-speech resolves into meaning:`),
-            `  weakness: ${this.world.breed.weakness}`,
-            `  intel the crew hasn't used on it yet: ${unused.join(', ') || 'none'}`,
-          ].join('\n'),
-        );
-        break;
-      }
-      case 'icepick': {
-        const t = target?.toLowerCase();
-        if (!t || !this.node().links.includes(t)) return p.send(c.dim(`usage: cast icepick <node next to the runner>`));
-        if (t === VAULT) return p.send(c.dim(`the vault's locks are older than icepick. it would shatter.`));
-        if (this.isOpen(t)) return p.send(c.dim(`${t} is already open.`));
-        this.unlocked.add(t);
-        this.emit({ kind: 'unlock', node: t });
-        this.broadcast(c.magenta(`✦ ${p.handle} runs icepick.exe. ${t}'s ICE wall shatters like glass.`));
-        break;
-      }
-      case 'mend':
-        this.broadcast(c.magenta(`✦ ${p.handle} runs mend.sys and rewrites the access logs.`));
-        this.emit({ kind: 'heal', amount: RULES.mendAmount });
-        this.addTrace(-RULES.mendAmount, 'mend.sys');
-        break;
-      case 'nova':
-        return;
-    }
-    this.deck.set(spec.id, (this.deck.get(spec.id) ?? 1) - 1);
     this.refresh();
+    if (this.resolveWhenSpoken && this.pendingSpeech === 0) return this.resolve();
+    this.checkReady();
   }
 
-  private combatAction(p: GamePlayer, cmd: string, rest: string[]) {
-    let action: CombatAction;
-    if (cmd === 'cast') {
-      const spec = rest[0] ? programByName(rest[0]) : undefined;
-      if (!spec) return p.send(c.dim(`usage: cast <program>. in combat: ${this.encounter!.menuFor(p)}`));
-      action = { kind: 'cast', program: spec.id };
-    } else {
-      action = { kind: cmd as Exclude<CombatAction['kind'], 'cast'> };
-    }
-    const err = this.encounter!.act(p, action);
-    if (err) p.send(c.dim(err));
+  private checkReady() {
+    if (this.phase !== 'combat' && this.phase !== 'boss') return;
+    if (this.pendingSpeech > 0) return;
+    if ([...this.players.keys()].every((id) => this.isReady(id))) this.resolve();
   }
 
-  private combatHost(): CombatHost {
-    return {
-      dice: this.dice,
-      players: () => [...this.players.values()],
-      has: (id, role) => this.has(id, role),
-      check: (who, label, bonus, dc) => this.check(who, label, bonus, dc),
-      broadcast: (text) => this.broadcast(text),
-      addTrace: (amount, reason) => this.addTrace(amount, reason),
-      ended: () => this.ended,
-      hasProgram: (id) => (this.deck.get(id) ?? 0) > 0,
-      spendProgram: (id) => {
-        this.deck.set(id, (this.deck.get(id) ?? 1) - 1);
-      },
-      refresh: () => this.refresh(),
-      fx: (fx) => this.emit(fx),
-      finish: (result) => this.finishEncounter(result),
+  private forceResolve() {
+    if (this.phase !== 'combat' && this.phase !== 'boss') return;
+    this.broadcast(c.dim('   (time! anyone undecided holds back this round.)'));
+    if (this.pendingSpeech > 0) this.resolveWhenSpoken = true;
+    else this.resolve();
+  }
+
+  private resolve() {
+    const f = this.foe;
+    if (!f) return;
+    this.clearTimer();
+    this.resolveWhenSpoken = false;
+    const handle = (id: string) => this.players.get(id)?.handle ?? 'someone';
+    const shelled = f.intent.kind === 'shell';
+    const queue = [...this.queued].sort((a, b) => ORDER.indexOf(a.move) - ORDER.indexOf(b.move));
+    let warded = false;
+    let hexed = false;
+
+    const hit = (who: string, cls: ClassId, move: Move, base: number, opts: { doubles?: boolean; pierces?: boolean } = {}) => {
+      let dmg = base;
+      const doubled = opts.doubles && f.exposed;
+      if (doubled) dmg *= NUM.exposedMult;
+      if (shelled && !opts.pierces) dmg = Math.ceil(dmg * NUM.shellMult);
+      f.hp = Math.max(0, f.hp - dmg);
+      this.emit({ kind: 'act', by: who, cls, move, amount: dmg });
+      const notes = [doubled ? c.cyan('exposed ×2') : '', shelled && !opts.pierces ? c.dim('shell ½') : ''].filter(Boolean).join(' ');
+      this.broadcast(`   ${c.green(`${who} · ${MOVES[move].label}: ${dmg} damage`)} ${notes} ${c.dim(`→ ${f.hp}/${f.maxHp}`)}`);
     };
-  }
 
-  private finishEncounter(result: 'slain' | 'fled') {
-    const enc = this.encounter;
-    if (!enc) return;
-    this.encounter = undefined;
-    if (result === 'slain') {
-      this.lairs.delete(enc.nodeId);
-      this.emit({ kind: 'slay' });
-      this.broadcast(c.green(c.bold(`✔ the ${enc.monster.name} is destroyed.`)));
-      this.narrate({ kind: 'slay', monster: enc.monster.name, node: enc.nodeId });
-      this.addToDeck(this.rng.pick(PROGRAM_IDS), 'it dropped');
-    } else {
-      this.lairs.set(enc.nodeId, { spec: enc.monster, hp: enc.hp });
-      this.runnerAt = this.prevAt;
-      this.broadcast(c.dim(`>> runner fell back to ${this.runnerAt}`));
+    for (const q of queue) {
+      const who = handle(q.player);
+      switch (q.move) {
+        case 'ward':
+          warded = true;
+          this.emit({ kind: 'act', by: who, cls: q.cls, move: 'ward' });
+          this.broadcast(`   ${c.yellow(`${who} · Ward: the crew is shielded this round`)}`);
+          break;
+        case 'mend': {
+          const amount = Math.min(this.corruption, NUM.mend + (this.relics.has('feather') ? NUM.featherBonus : 0));
+          this.corruption -= amount;
+          this.emit({ kind: 'act', by: who, cls: q.cls, move: 'mend', amount });
+          if (amount) this.broadcast(`   ${c.yellow(`${who} · Mend: −${amount}% corruption`)} ${c.dim(`→ ${this.corruption}%`)}`);
+          else this.broadcast(c.dim(`   ${who} · Mend: nothing to cleanse yet`));
+          break;
+        }
+        case 'hex':
+          hexed = true;
+          f.exposed = true;
+          hit(who, q.cls, 'hex', NUM.hex);
+          break;
+        case 'bolt':
+          hit(who, q.cls, 'bolt', NUM.bolt + (this.relics.has('glass') ? NUM.glassBonus : 0), { pierces: true });
+          break;
+        case 'speak':
+          if ((q.amount ?? 0) < 0) {
+            f.enraged += NUM.enrage;
+            this.emit({ kind: 'act', by: who, cls: q.cls, move: 'speak', amount: 0 });
+            this.broadcast(`   ${c.red(`${who}'s words enrage it: its next attack hits +${NUM.enrage}`)}`);
+          } else if (q.amount) {
+            hit(who, q.cls, 'speak', q.amount, { pierces: true });
+          } else {
+            this.broadcast(c.dim(`   ${who}'s words slide off its scales.`));
+          }
+          break;
+        case 'strike':
+          hit(who, q.cls, 'strike', NUM.strike + (this.relics.has('fang') ? NUM.fangBonus : 0), { doubles: true });
+          break;
+        case 'fury':
+          hit(who, q.cls, 'fury', NUM.fury, { doubles: true });
+          if (!this.relics.has('mask')) {
+            this.corruption = Math.min(100, this.corruption + NUM.furyCost);
+            this.broadcast(c.dim(`   the fury costs the crew +${NUM.furyCost}% corruption`));
+          }
+          break;
+      }
+      if (f.hp <= 0) return this.winFight();
     }
-    this.refresh();
-  }
+    if (this.corruption >= 100) return this.end(false);
 
-  private bestiary(p: GamePlayer) {
-    const w = this.world;
-    p.send(
-      [
-        c.bold('BESTIARY // what lives in corporate nets'),
-        c.red('wyrms'),
-        ...BREED_IDS.map((id) => {
-          const b = BREEDS[id];
-          return `  ${(id === w.breed.id ? c.red : (s: string) => s)(b.title.padEnd(11))} ${c.dim(b.temperament)}${id === w.breed.id ? c.red('  ◀ guards this vault') : ''}`;
-        }),
-        c.red('ICE'),
-        ...MONSTERS.map((m) => `  ${m.name.padEnd(17)} ${c.dim(`HP ${m.hp} · hits for ${m.damage[0]}d${m.damage[1]}${m.damage[2] ? `+${m.damage[2]}` : ''} trace`)}`),
-        c.magenta('programs'),
-        ...PROGRAM_IDS.map((id) => `  ${PROGRAMS[id].file.padEnd(13)} ${c.dim(PROGRAMS[id].blurb)}`),
-      ].join('\n'),
-    );
-  }
-
-  // ---------------------------------------------------------------- systems
-
-  private log(text: string) {
-    const t = Math.floor((Date.now() - this.startedAt) / 1000);
-    this.iceLog.push(`${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')} ${text}`);
-    if (this.iceLog.length > 50) this.iceLog.shift();
-  }
-
-  addTrace(amount: number, reason: string) {
-    if (this.ended) return;
-    this.trace = Math.max(0, Math.min(100, this.trace + amount));
-    this.log(`${amount >= 0 ? '+' : ''}${amount} ${reason}`);
-    for (const level of [50, 75, 90]) {
-      if (this.trace >= level && this.warnedAt < level) {
-        this.warnedAt = level;
-        this.broadcast(traceColor(level)(`!! TRACE ${level}%: they're closing in`));
+    // the foe's move
+    const it = f.intent;
+    const extra = f.enraged;
+    switch (it.kind) {
+      case 'attack':
+      case 'heavy': {
+        const amount = it.amount + extra;
+        if (warded) {
+          this.emit({ kind: 'foe', move: it.kind, amount, blocked: true });
+          this.broadcast(`   ${c.yellow(`${f.name} · ${it.verb}: blocked by the Ward!`)}`);
+          if (this.relics.has('bell')) {
+            f.hp = Math.max(0, f.hp - NUM.bellReflect);
+            this.broadcast(`   ${c.magenta(`the Jade Bell rings: ${NUM.bellReflect} damage reflected`)}`);
+            if (f.hp <= 0) return this.winFight();
+          }
+        } else {
+          this.corruption = Math.min(100, this.corruption + amount);
+          this.emit({ kind: 'foe', move: it.kind, amount, blocked: false });
+          this.broadcast(`   ${c.red(`${f.name} · ${it.verb}: +${amount}% corruption`)} ${c.dim(`→ ${this.corruption}%`)}`);
+        }
+        f.enraged = 0;
+        break;
+      }
+      case 'charge':
+        if (hexed) {
+          this.emit({ kind: 'stun' });
+          this.broadcast(`   ${c.cyan(`the Hex breaks ${f.name}'s charge. it staggers.`)}`);
+        } else {
+          f.pendingHeavy = { kind: 'heavy', amount: it.amount, verb: it.verb };
+          this.emit({ kind: 'foe', move: 'charge', amount: it.amount, blocked: false });
+          this.broadcast(`   ${c.red(`${f.name} gathers itself. ${it.verb} ${it.amount} is coming next round!`)}`);
+        }
+        break;
+      case 'shell':
+        this.emit({ kind: 'foe', move: 'shell', amount: 0, blocked: false });
+        this.broadcast(c.dim(`   ${f.name} hardens.`));
+        break;
+      case 'wail': {
+        const amount = it.amount + extra;
+        this.corruption = Math.min(100, this.corruption + amount);
+        this.emit({ kind: 'foe', move: 'wail', amount, blocked: false });
+        this.broadcast(`   ${c.red(`${f.name} · ${it.verb}: +${amount}% corruption (unblockable)`)} ${c.dim(`→ ${this.corruption}%`)}`);
+        f.enraged = 0;
+        break;
       }
     }
-    if (this.trace < 50) this.warnedAt = 0;
-    else if (this.trace < this.warnedAt) this.warnedAt = [50, 75, 90].filter((l) => l <= this.trace).pop() ?? 0;
-    this.refresh();
-    if (this.trace >= 100) this.end(false, `trace complete. ${this.world.corp} security burned the crew's decks`);
-  }
+    if (this.corruption >= 100) return this.end(false);
 
-  /** Called after each runner action: the patrol moves on its own clock. */
-  private tick() {
-    if (this.ended) return;
-    this.actions++;
-    if (this.actions % RULES.patrolEvery !== 0) return;
-    const options = this.node(this.patrolAt).links.filter((l) => l !== GATEWAY && l !== VAULT);
-    if (options.length === 0) return;
-    this.patrolAt = this.rng.pick(options);
-    this.toRole('SENTRY', c.yellow(`   hunting patrol moved to ${this.patrolAt}`));
-    if (this.patrolAt === this.runnerAt && this.ghostMoves === 0) {
-      this.broadcast(c.red(`!! the hunting patrol swept through ${this.runnerAt}`));
-      this.addTrace(RULES.patrolSweepCost, `patrol swept ${this.runnerAt}`);
+    // what it does next
+    if (f.pendingHeavy) {
+      f.intent = f.pendingHeavy;
+      f.pendingHeavy = undefined;
+    } else {
+      f.step = (f.step + 1) % f.spec.pattern.length;
+      f.intent = f.spec.pattern[f.step]!;
     }
+    f.exposed = false;
+    this.round++;
+    this.queued = [];
+    this.acted.clear();
+    this.announceRound();
   }
 
-  private end(win: boolean, reason: string) {
-    if (this.ended) return;
-    this.ended = true;
-    this.encounter?.dispose();
-    this.dispose();
+  private winFight() {
+    const f = this.foe!;
+    this.clearTimer();
+    this.emit({ kind: 'slay', boss: f.boss });
+    if (f.boss) return this.end(true);
+    this.broadcast(c.green(c.bold(`✔ ${f.name} is destroyed.`)));
+    this.narrate({ kind: 'slay', foe: f.name });
+    const gained = f.elite ? 2 : 1;
+    this.seals += gained;
+    const weaker = Math.round(Math.min(this.seals, NUM.maxSeals) * NUM.sealCut * 100);
+    this.broadcast(c.magenta(`✦ +${gained} seal${gained > 1 ? 's' : ''} on the Devourer: it will be ${weaker}% weaker.`));
+    if (f.elite) this.grantRelic('the lair held');
+    this.foe = undefined;
+    this.nextFloor();
+  }
+
+  // ---------------------------------------------------------------- players & lifecycle
+
+  removePlayer(id: string) {
+    const orphaned = this.classes.get(id) ?? [];
+    const leaving = this.players.get(id);
+    this.players.delete(id);
+    this.classes.delete(id);
+    this.votes.delete(id);
+    this.acted.delete(id);
+    this.queued = this.queued.filter((q) => q.player !== id);
+    if (this.phase === 'ended' || this.players.size === 0) return;
+    for (const cls of orphaned) {
+      if ([...this.classes.values()].some((cl) => cl.includes(cls))) continue;
+      const heir = [...this.players.values()].sort((a, b) => (this.classes.get(a.id)?.length ?? 0) - (this.classes.get(b.id)?.length ?? 0))[0]!;
+      this.classes.get(heir.id)!.push(cls);
+      this.broadcast(c.magenta(`>> ${leaving?.handle ?? 'someone'} faded. ${heir.handle} takes up the ${CLASS_NAME[cls]}.`));
+    }
+    this.refresh();
+    if (this.phase === 'route' && this.votes.size >= this.players.size) this.resolveVote(false);
+    else this.checkReady();
+  }
+
+  private startTimer(ms: number, fn: () => void) {
+    this.clearTimer();
+    if (ms > 0) this.timer = setTimeout(fn, ms);
+  }
+
+  private clearTimer() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+  }
+
+  private end(win: boolean) {
+    if (this.phase === 'ended') return;
+    this.phase = 'ended';
+    this.clearTimer();
     const seconds = Math.round((Date.now() - this.startedAt) / 1000);
-    const w = this.world;
+    const reason = win ? `${this.wyrmName} is sealed. Neo-Avalon wakes.` : `corruption reached 100%. ${this.wyrmName} wakes, and the city goes dark.`;
     this.broadcast(
-      [
-        '',
-        win ? c.green(c.bold('█ DELVE COMPLETE █')) : c.red(c.bold('█ FLATLINED █')),
-        reason + '.',
-        c.dim(`time ${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s · trace ${this.trace}% · vault code was ${w.passcode} · ${w.wardenName} was a ${w.breed.title} · seed ${w.seed}`),
-        '',
-      ].join('\n'),
+      ['', win ? c.green(c.bold('█ THE LIGHT HOLDS █')) : c.red(c.bold('█ THE CITY FALLS █')), reason, c.dim(`floor ${this.floor} · corruption ${this.corruption}% · ${this.seals} seals · ${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`), ''].join('\n'),
     );
     this.emit({ kind: 'end', win });
-    this.narrate({ kind: 'end', win, corp: w.corp, wyrmName: w.wardenName });
-    this.opts.onEnd({ win, reason, trace: this.trace, seconds });
+    this.narrate({ kind: 'end', win, wyrmName: this.wyrmName });
+    this.refresh();
+    this.opts.onEnd({ win, reason, corruption: this.corruption, seconds });
   }
 
   dispose() {
-    if (this.ticker) clearInterval(this.ticker);
-    this.ticker = undefined;
-    this.encounter?.dispose();
+    this.clearTimer();
   }
-}
-
-function traceColor(trace: number) {
-  return trace >= 75 ? c.red : trace >= 50 ? c.yellow : c.green;
 }

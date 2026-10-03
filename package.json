@@ -1,7 +1,7 @@
 {
-  "name": "icebreaker",
+  "name": "last-light",
   "version": "0.1.0",
-  "description": "A co-op cyberpunk dungeon delve in a shared terminal. Fight ICE, roll the dice, and talk your way past an AI wyrm.",
+  "description": "A co-op descent for 2-4 players: small mythical spirits fight horrors beneath a neon city to seal the waking Devourer.",
   "type": "module",
   "private": true,
   "engines": {

@@ -3,10 +3,9 @@ import type { Ai } from '../ai.js';
 // The dungeon master: a line or two of narration at the moments that matter.
 
 export type NarrationEvent =
-  | { kind: 'start'; corp: string; district: string; wyrmName: string; breedTitle: string }
-  | { kind: 'enter'; node: string; label: string; corp: string }
-  | { kind: 'slay'; monster: string; node: string }
-  | { kind: 'end'; win: boolean; corp: string; wyrmName: string };
+  | { kind: 'start'; wyrmName: string; breedTitle: string; district: string }
+  | { kind: 'slay'; foe: string }
+  | { kind: 'end'; win: boolean; wyrmName: string };
 
 export interface Narrator {
   readonly label: string;
@@ -21,30 +20,23 @@ export class ScriptedNarrator implements Narrator {
   async narrate(e: NarrationEvent): Promise<string> {
     switch (e.kind) {
       case 'start':
-        return `Rain hisses on the neon of ${e.district}. ${e.corp}'s tower drinks the light, and deep beneath it ${e.wyrmName}, a ${e.breedTitle}, turns in its sleep. Your decks hum. The delve begins.`;
-      case 'enter':
-        return pick([
-          `The ${e.label} unfolds around you in wireframe and static.`,
-          `You drop into the ${e.label}. The air tastes like ozone and old passwords.`,
-          `The ${e.label}. Somewhere a cooling fan whines like a trapped animal.`,
-          `Data rains upward through the ${e.label}. Nothing here wants you.`,
-        ]);
+        return `Rain hisses on the neon of ${e.district}. Far below the streets, ${e.wyrmName}, a ${e.breedTitle}, stirs in its sleep, and every screen in the city flickers. You descend.`;
       case 'slay':
         return pick([
-          `The ${e.monster} comes apart in a shower of dead pixels.`,
-          `The ${e.monster} shrieks once in corrupted audio and is gone.`,
-          `What is left of the ${e.monster} drips through the floor of ${e.node} as harmless static.`,
+          `The ${e.foe.replace(/^The /, '')} comes apart in a shower of dead pixels. Somewhere below, the Devourer flinches.`,
+          `It shrieks once in corrupted audio and is gone. One more seal burns into the dark.`,
+          `What is left of it drips through the floor as harmless static. The way down is open.`,
         ]);
       case 'end':
         return e.win
-          ? `You surface into the rain with ${e.corp}'s secrets burning in your decks. Somewhere far below, ${e.wyrmName} counts its hoard and finds it lighter.`
-          : `Your screens go white. ${e.wyrmName} adds your handles to its hoard, a trophy shelf of failed runners.`;
+          ? `The seals close. ${e.wyrmName} sinks back into its long sleep, and above you a whole city wakes up, never knowing how close it came.`
+          : `The last light goes out. ${e.wyrmName} rises through the net, and one by one, the windows of Neo-Avalon go dark.`;
     }
   }
 }
 
 const SYSTEM = [
-  'You are the dungeon master of a cyberpunk-fantasy heist game set in Neo-Avalon, a neon city where corporations chain ancient AI wyrms to their data vaults and netrunners delve their networks like dungeons.',
+  'You narrate LAST LIGHT, a cyberpunk-fantasy horror game: a crew of small mythical spirits descends through the haunted net beneath the neon city of Neo-Avalon to seal the Devourer, an ancient AI wyrm whose waking would darken every mind in the city.',
   'Narrate the given moment to the party in one or two vivid sentences, under 40 words, second person plural, present tense.',
   'Mix cyberpunk and high-fantasy imagery. No markdown, no emoji, no dialogue for the players, no game advice.',
 ].join('\n');

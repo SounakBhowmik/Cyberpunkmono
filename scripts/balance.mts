@@ -1,30 +1,73 @@
+// Plays many full games with bot crews to check that strategy matters:
+// a crew that reads the foe's intent should win far more often than one
+// that mashes random buttons.
+import type { ActionButton, SceneState } from '../src/shared/protocol.js';
 import { Game } from '../src/server/game/game.js';
-import { ScriptedWarden } from '../src/server/game/ice.js';
-import { GATEWAY, VAULT } from '../src/server/game/world.js';
-const mk = (id: string) => ({ id, handle: id, send() {}, setPrompt() {}, showRoll() {}, setHud() {}, setScene() {}, fx() {} });
-const PASSIVE_PER_ACTION = Number(process.env.PASSIVE ?? 0.6); // ~20s tick, ~12s per action
-let wins = 0, traces: number[] = [], fights = 0;
-const N = 400;
-for (let seed = 1; seed <= N; seed++) {
-  const ps = [mk('a'), mk('b'), mk('c')];
-  let res: any;
-  const g = new Game(ps, { warden: new ScriptedWarden(), seed, tickMs: 0, roundMs: 0, onEnd: (r) => (res = r) });
-  const who = (r: string) => ps.find((p) => g.roles.get(p.id)!.has(r as any))!;
-  const R = who('RUNNER'), O = who('OPERATOR'), Snt = who('SENTRY');
-  const w = g.world;
-  let passive = 0;
-  const act = (line: string) => { if (res) return; g.handle(R.id, line); passive += PASSIVE_PER_ACTION; while (passive >= 1 && !res) { g.addTrace(1, 'tick'); passive--; }
-    if (g.trace > 35 && !res) g.handle(Snt.id, 'spoof'); };
-  const fight = () => { let n = 0; if (g.encounter) fights++; while (g.encounter && !res && n++ < 30) { g.handle(Snt.id, 'shield'); g.handle(O.id, 'bolt'); g.handle(R.id, 'strike'); } };
-  const path = (from: string, to: string) => { const prev = new Map<string, string>(); const q = [from]; const seen = new Set(q);
-    while (q.length) { const id = q.shift()!; for (const n of w.nodes.get(id)!.links) { if (n === VAULT || seen.has(n)) continue; seen.add(n); prev.set(n, id); q.push(n); } }
-    const p = [to]; while (p[0] !== from) p.unshift(prev.get(p[0]!)!); return p.slice(1); };
-  const goto = (to: string) => { for (const id of path(g.runnerAt, to)) { const n = w.nodes.get(id)!;
-      for (let t = 0; t < 6 && n.locked && !(g as any).unlocked.has(id) && !res; t++) act(`crack ${id} ${n.port}`);
-      act(`move ${id}`); fight(); if (g.runnerAt !== id) return; } };
-  for (const id of w.middle) { if (res) break; goto(id); for (const f of w.nodes.get(id)!.files) if (f.intel) act(`cat ${f.name}`); }
-  goto(w.gateId); act(`crack vault ${w.passcode}`); act('move vault'); act('download');
-  if (res?.win) wins++; traces.push(res?.trace ?? g.trace); g.dispose();
+import { ScriptedJudge } from '../src/server/game/parley.js';
+import { NUM } from '../src/server/game/content.js';
+
+if (process.env.FOE_DMG) NUM.foeDmg = Number(process.env.FOE_DMG);
+if (process.env.FOE_HP) NUM.foeHp = Number(process.env.FOE_HP);
+
+type Policy = 'smart' | 'human' | 'random';
+const N = Number(process.env.N ?? 500);
+const CREW = Number(process.env.CREW ?? 3);
+
+async function play(seed: number, policy: Policy) {
+  const scenes = new Map<string, SceneState>();
+  const actions = new Map<string, ActionButton[]>();
+  const players = Array.from({ length: CREW }, (_, i) => ({
+    id: `p${i}`, handle: `p${i}`, send() {}, setPrompt() {}, setHud() {}, fx() {},
+    setScene(s: SceneState, a: ActionButton[]) { scenes.set(`p${i}`, s); actions.set(`p${i}`, a); },
+  }));
+  let result: { win: boolean; corruption: number } | undefined;
+  const game = new Game(players, { judge: new ScriptedJudge(), seed, roundMs: 0, voteMs: 0, onEnd: (r) => (result = r) });
+  const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)]!;
+
+  for (let guard = 0; !result && guard < 400; guard++) {
+    const s = scenes.get('p0')!;
+    if (s.view === 'route') {
+      for (const p of players) {
+        const opts = s.options!;
+        let choice = 1;
+        if (policy !== 'smart') choice = 1 + Math.floor(Math.random() * opts.length);
+        else {
+          const rank = (k: string) => (k === 'shrine' ? (s.corruption > 40 ? 5 : 0) : k === 'elite' ? (s.corruption < 25 ? 4 : -1) : k === 'cache' ? 3 : k === 'fight' ? 2 : 1);
+          choice = 1 + opts.reduce((best, o, i) => (rank(o.kind) > rank(opts[best]!.kind) ? i : best), 0);
+        }
+        game.handle(p.id, `vote ${choice}`);
+      }
+      continue;
+    }
+    const foe = s.foe!;
+    const intent = foe.intent.kind;
+    for (const p of players) {
+      for (const cls of game.classes.get(p.id) ?? []) {
+        if (result || scenes.get('p0')!.round !== s.round || scenes.get('p0')!.view === 'route') break;
+        let move: string;
+        const careless = policy === 'random' || (policy === 'human' && Math.random() < 0.3);
+        if (careless) move = pick({ striker: ['strike', 'fury'], mystic: ['hex', 'bolt'], guardian: ['ward', 'mend'] }[cls]);
+        else if (cls === 'guardian') move = intent === 'attack' || intent === 'heavy' ? 'ward' : 'mend';
+        else if (cls === 'mystic') move = intent === 'charge' ? 'hex' : intent === 'shell' ? 'bolt' : 'hex';
+        else move = intent !== 'shell' && s.corruption < 45 && foe.hp > 12 ? 'fury' : 'strike';
+        game.handle(p.id, move);
+      }
+    }
+  }
+  game.dispose();
+  return result ?? { win: false, corruption: 100 };
 }
-traces.sort((a, b) => a - b);
-console.log(`passive/action=${PASSIVE_PER_ACTION} win ${(100 * wins / N).toFixed(0)}%  median trace ${traces[N >> 1]}  p90 ${traces[Math.floor(N * 0.9)]}  fights/game ${(fights / N).toFixed(1)}`);
+
+for (const policy of ['smart', 'human', 'random'] as Policy[]) {
+  let wins = 0;
+  const left: number[] = [];
+  for (let i = 1; i <= N; i++) {
+    const r = await play(i * 7919, policy);
+    if (r.win) {
+      wins++;
+      left.push(r.corruption);
+    }
+  }
+  left.sort((a, b) => a - b);
+  console.log(`${policy.padEnd(6)} crew of ${CREW}: win ${((100 * wins) / N).toFixed(0)}%  median corruption on a win ${left[left.length >> 1] ?? '-'}%`);
+}

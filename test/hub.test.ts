@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ActionButton, Fx, HudState, RollView, SceneState } from '../src/shared/protocol.js';
-import { ScriptedWarden } from '../src/server/game/ice.js';
+import type { ActionButton, Fx, HudState, SceneState } from '../src/shared/protocol.js';
+import { ScriptedJudge } from '../src/server/game/parley.js';
 import { Hub, type Session } from '../src/server/hub.js';
 
 class FakeSession implements Session {
@@ -13,7 +13,6 @@ class FakeSession implements Session {
     this.out.push(text);
   }
   setPrompt() {}
-  roll(_r: RollView) {}
   hud(h: HudState) {
     this.huds.push(h);
   }
@@ -29,7 +28,7 @@ class FakeSession implements Session {
 }
 
 function lobby() {
-  const hub = new Hub({ warden: new ScriptedWarden(), tickMs: 0, roundMs: 0 });
+  const hub = new Hub({ judge: new ScriptedJudge(), roundMs: 0, voteMs: 0 });
   const a = new FakeSession('a');
   const b = new FakeSession('b');
   hub.connect(a);
@@ -68,7 +67,7 @@ test('the rerolled avatar follows the player into the delve', () => {
 });
 
 test('rerolling works on the street too', () => {
-  const hub = new Hub({ warden: new ScriptedWarden(), tickMs: 0 });
+  const hub = new Hub({ judge: new ScriptedJudge(), voteMs: 0 });
   const s = new FakeSession('s');
   hub.connect(s);
   hub.handleLine('s', 'zero');

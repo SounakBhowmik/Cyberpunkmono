@@ -42,9 +42,9 @@ header {
 
 .logo {
   font-weight: 700;
-  letter-spacing: 0.25em;
-  color: var(--cyan);
-  text-shadow: 0 0 8px rgba(0, 240, 255, 0.7), 2px 0 0 rgba(255, 43, 214, 0.6);
+  letter-spacing: 0.3em;
+  color: #ffe9a8;
+  text-shadow: 0 0 10px rgba(255, 184, 0, 0.8), 0 0 2px #fff;
 }
 
 .hint { color: var(--muted); font-size: 12px; }
@@ -279,4 +279,37 @@ header, #hud, #actions, #cmdbar { flex-shrink: 0; }
   margin-right: 4px;
   vertical-align: -3px;
   image-rendering: pixelated;
+}
+
+/* ------------------------------------------------------------ grouped actions */
+
+#actions { align-items: stretch; }
+.act-group {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+  padding-right: 10px;
+  margin-right: 4px;
+  border-right: 1px solid rgba(215, 227, 255, 0.1);
+}
+.act-group:last-child { border-right: none; }
+.act-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+  align-self: center;
+}
+.act { display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 2px; max-width: 230px; }
+.act b { font-weight: 700; }
+.act small { font-size: 10px; color: var(--muted); line-height: 1.25; white-space: normal; }
+.act:disabled small { color: inherit; }
+#hud .wyrm.red, #hud .wyrm.blue, #hud .wyrm.green, #hud .wyrm.black, #hud .wyrm.white { font-size: 11px; }
+
+@media (max-width: 600px) {
+  .act-label { writing-mode: horizontal-tb; transform: none; align-self: center; }
+  .act { max-width: 170px; }
+  .act small { font-size: 9px; }
 }

@@ -1,9 +1,9 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
-import { MAX_LINE_LENGTH, type ActionButton, type ClientMessage, type HudMember, type HudState, type RollView, type SceneRoom, type SceneState, type ServerMessage } from '../shared/protocol';
+import { MAX_LINE_LENGTH, type ActionButton, type ClientMessage, type Fx, type HudMember, type HudState, type SceneState, type ServerMessage } from '../shared/protocol';
 import { avatarDataUrl, avatarSeed } from './avatar';
 import { SceneView } from './scene';
-import { Sound, type Ambience } from './sound';
+import { Sound, type Mood, type Sfx } from './sound';
 
 /** Phones and tablets type into a real input box; desktops type straight into the terminal. */
 const touch = window.matchMedia('(pointer: coarse)').matches;
@@ -17,7 +17,7 @@ const term = new Terminal({
   theme: {
     background: '#07060d',
     foreground: '#d7e3ff',
-    cursor: '#ff2bd6',
+    cursor: '#ffb800',
     selectionBackground: '#3b1e5a',
     cyan: '#00f0ff',
     brightCyan: '#5ff9ff',
@@ -29,12 +29,14 @@ const term = new Terminal({
     brightGreen: '#7dffb0',
     red: '#ff3860',
     brightRed: '#ff6b88',
+    blue: '#8fa8ff',
+    brightBlue: '#b3c4ff',
   },
 });
 const fit = new FitAddon();
 term.loadAddon(fit);
 // xterm measures glyphs when it opens; opening before the web font arrives
-// leaves every character spaced for the fallback font and garbles ASCII art.
+// leaves every character spaced for the fallback font.
 await Promise.race([document.fonts.load('15px "JetBrains Mono"'), new Promise((r) => setTimeout(r, 1500))]).catch(() => {});
 term.open(document.getElementById('terminal')!);
 fit.fit();
@@ -54,7 +56,6 @@ let historyIndex = 0;
 const visibleLength = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '').length;
 
 function redraw() {
-  if (animating) return;
   term.write('\r\x1b[2K' + prompt + buffer);
   const back = buffer.length - cursor;
   if (back > 0) term.write(`\x1b[${back}D`);
@@ -99,7 +100,7 @@ term.onData((data) => {
         redraw();
       }
       return;
-    case '\x1b[3~': // delete
+    case '\x1b[3~':
       buffer = buffer.slice(0, cursor) + buffer.slice(cursor + 1);
       return redraw();
     case '\x1b[D':
@@ -130,17 +131,16 @@ term.onData((data) => {
         redraw();
       }
       return;
-    case '\x03': // ctrl+c
+    case '\x03':
       buffer = '';
       cursor = 0;
       term.write('^C\r\n');
       return redraw();
-    case '\x0c': // ctrl+l
+    case '\x0c':
       term.clear();
       return redraw();
   }
   if (data.startsWith('\x1b')) return;
-  // Typed characters or a paste: keep printable text, submit on embedded newlines.
   const parts = data.replace(/[\x00-\x09\x0b\x0c\x0e-\x1f]/g, '').split(/\r\n|\r|\n/);
   parts.forEach((part, i) => {
     if (part) insert(part);
@@ -148,24 +148,9 @@ term.onData((data) => {
   });
 });
 
-// ---------------------------------------------------------------- scene & actions
+// ---------------------------------------------------------------- commands
 
-let animating = false;
-let lastScene: SceneState | undefined;
-let lastActions: ActionButton[] = [];
-let lastHud: HudState | undefined;
-
-const scene = new SceneView(document.getElementById('scene') as HTMLCanvasElement, (room, sc) => clickRoom(room, sc));
-
-async function animateRoll(roll: RollView) {
-  sound.dice(roll.outcome);
-  animating = true;
-  await scene.rollDie(roll);
-  animating = false;
-  print(roll.text);
-}
-
-/** Put a command in the editor for the player to finish (e.g. a port number). */
+/** Put a command in the editor for the player to finish (e.g. what to say). */
 function prefill(cmd: string) {
   if (touch) {
     cmdInput.value = cmd;
@@ -188,8 +173,6 @@ function run(cmd: string) {
   if (!touch) term.focus();
 }
 
-// ---------------------------------------------------------------- touch input bar
-
 const cmdForm = document.getElementById('cmdbar') as HTMLFormElement;
 const cmdInput = document.getElementById('cmd') as HTMLInputElement;
 cmdForm.addEventListener('submit', (e) => {
@@ -200,7 +183,16 @@ cmdForm.addEventListener('submit', (e) => {
   run(line);
 });
 
-// ---------------------------------------------------------------- sound
+// ---------------------------------------------------------------- scene, buttons, sound
+
+let lastScene: SceneState | undefined;
+let lastActions: ActionButton[] = [];
+let lastHud: HudState | undefined;
+
+const scene = new SceneView(document.getElementById('scene') as HTMLCanvasElement, (index) => {
+  sound.play('click');
+  run(`vote ${index + 1}`);
+});
 
 const soundBtn = document.getElementById('sound') as HTMLButtonElement;
 function renderSoundBtn() {
@@ -214,16 +206,19 @@ soundBtn.onclick = () => {
 renderSoundBtn();
 for (const ev of ['pointerdown', 'keydown'] as const) document.addEventListener(ev, () => sound.unlock(), { passive: true });
 
-const FX_SOUND: Partial<Record<string, Parameters<Sound['play']>[0]>> = {
-  move: 'move', unlock: 'unlock', alarm: 'alarm', hurt: 'hurt', heal: 'heal', strike: 'strike', slay: 'slay', loot: 'loot', intro: 'intro',
-};
-
-function clickRoom(room: SceneRoom, sc: SceneState) {
-  const me = sc.party.find((m) => m.you);
-  const here = sc.rooms.find((r) => r.id === sc.runnerAt);
-  if (!me?.classes.includes('rogue') || !here?.links.includes(room.id)) return;
-  if (!room.locked) run(`move ${room.id}`);
-  else prefill(room.kind === 'vault' ? 'crack vault ' : `crack ${room.id} `);
+function fxSound(fx: Fx): Sfx | undefined {
+  switch (fx.kind) {
+    case 'intro': return 'intro';
+    case 'enter': return 'enter';
+    case 'act': return fx.move;
+    case 'foe': return fx.blocked ? 'blocked' : fx.move === 'charge' ? 'charge' : fx.move === 'wail' ? 'wail' : fx.move === 'shell' ? undefined : 'foeHit';
+    case 'stun': return 'stun';
+    case 'heal': return 'shrine';
+    case 'slay': return fx.boss ? 'bossSlay' : 'slay';
+    case 'relic': return 'relic';
+    case 'vote': return 'vote';
+    case 'end': return fx.win ? 'win' : 'lose';
+  }
 }
 
 const actionsEl = document.getElementById('actions')!;
@@ -234,7 +229,7 @@ function lobbyActions(): ActionButton[] {
   if (!h) return [];
   if (h.mode === 'street') {
     return [
-      { label: 'create safehouse', cmd: 'create', tone: 'go' },
+      { label: 'create a safehouse', cmd: 'create', tone: 'go' },
       { label: 'join', cmd: 'join ', input: true, tone: 'talk', hint: 'type the 4-letter code' },
       { label: 'reroll avatar', cmd: 'reroll', tone: 'magic' },
     ];
@@ -242,7 +237,7 @@ function lobbyActions(): ActionButton[] {
   if (h.mode === 'safehouse') {
     const me = h.party.find((m) => m.you);
     const out: ActionButton[] = [];
-    if (me?.host) out.push({ label: 'start the delve', cmd: 'start', tone: 'go', disabled: h.party.length < 2, hint: 'needs at least 2 netrunners' });
+    if (me?.host) out.push({ label: 'begin the descent', cmd: 'start', tone: 'go', disabled: h.party.length < 2, hint: 'needs at least 2 players' });
     out.push({ label: 'reroll avatar', cmd: 'reroll', tone: 'magic' }, { label: 'leave', cmd: 'leave', tone: 'info' });
     return out;
   }
@@ -251,35 +246,44 @@ function lobbyActions(): ActionButton[] {
 
 function renderActions() {
   actionsEl.replaceChildren();
-  if (lastScene) {
-    const map = document.createElement('button');
-    map.className = 'act tone-info toggle';
-    map.textContent = scene.mapForced ? '◫ back to scene' : '◫ map';
-    map.title = 'toggle the dungeon map';
-    map.onclick = () => {
-      sound.play('click');
-      scene.toggleMap();
-      renderActions();
-    };
-    if (lastScene.view !== 'explore') actionsEl.append(map);
-  }
-  for (const a of lastScene ? lastActions : lobbyActions()) {
+  const list = lastScene ? lastActions : lobbyActions();
+  let group: HTMLElement | undefined;
+  let groupName: string | undefined;
+  for (const a of list) {
+    if (a.group !== groupName || !group) {
+      groupName = a.group;
+      group = document.createElement('div');
+      group.className = 'act-group';
+      if (a.group) {
+        const label = document.createElement('span');
+        label.className = 'act-label';
+        label.textContent = a.group;
+        group.append(label);
+      }
+      actionsEl.append(group);
+    }
     const b = document.createElement('button');
     b.className = `act tone-${a.tone ?? 'info'}`;
-    b.textContent = a.input ? `${a.label} …` : a.label;
     b.disabled = !!a.disabled;
-    if (a.hint) b.title = a.hint;
+    const name = document.createElement('b');
+    name.textContent = a.input ? `${a.label} …` : a.label;
+    b.append(name);
+    if (a.hint && lastScene) {
+      const hint = document.createElement('small');
+      hint.textContent = a.hint;
+      b.append(hint);
+    } else if (a.hint) b.title = a.hint;
     b.onclick = () => {
       sound.play('click');
       if (a.input) prefill(a.cmd);
       else run(a.cmd);
     };
-    actionsEl.append(b);
+    group.append(b);
   }
-  if (!actionsEl.children.length) {
+  if (!list.length) {
     const hint = document.createElement('span');
     hint.className = 'act-hint';
-    hint.textContent = lastScene ? 'watch the map and talk to your crew. type to chat.' : 'pick a handle: type it below';
+    hint.textContent = lastScene ? 'waiting for the crew…' : 'pick a name: type it below';
     actionsEl.append(hint);
   }
 }
@@ -288,50 +292,37 @@ function renderActions() {
 
 const hudEl = document.getElementById('hud')!;
 const esc = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+const chip = (text: string, cls = '') => `<span class="chip ${cls}">${text}</span>`;
+const bar = (value: number, max: number, cls: string) => `<span class="bar ${cls}"><span style="width:${Math.max(0, Math.min(100, Math.round((value / max) * 100)))}%"></span></span>`;
 
-function chip(text: string, cls = '') {
-  return `<span class="chip ${cls}">${text}</span>`;
-}
-
-function bar(value: number, max: number, cls: string) {
-  const pct = Math.max(0, Math.min(100, Math.round((value / max) * 100)));
-  return `<span class="bar ${cls}"><span style="width:${pct}%"></span></span>`;
+function memberChip(m: HudMember) {
+  const av = `<img class="av" alt="" src="${avatarDataUrl(avatarSeed(m.handle, m.avatar), m.classes, 2)}">`;
+  const classes = m.classes.length ? ` <i>${esc(m.classes.join('+'))}</i>` : '';
+  const mark = m.host ? ' ★' : m.ready === true ? ' <em class="ok">ready</em>' : m.ready === false ? ' <em>choosing</em>' : '';
+  return chip(`${av}${esc(m.handle)}${classes}${mark}`, m.you ? 'you' : '');
 }
 
 function renderHud(h: HudState) {
   if (h.mode === 'street') {
     const av = h.handle ? `<img class="av" alt="" src="${avatarDataUrl(avatarSeed(h.handle, h.avatar ?? 0), [], 2)}">` : '';
-    hudEl.innerHTML = `<div class="row">${chip('THE STREET', 'tag')}${h.handle ? chip(`${av}${esc(h.handle)}`, 'you') : ''}<span class="muted">create a safehouse or join one</span></div>`;
+    hudEl.innerHTML = `<div class="row">${chip('NEO-AVALON', 'tag')}${h.handle ? chip(`${av}${esc(h.handle)}`, 'you') : ''}<span class="muted">create a safehouse or join your crew</span></div>`;
     return;
   }
-  const party = h.party
-    .map((m) => {
-      const classes = m.classes.length ? ` <i>${esc(m.classes.join('+'))}</i>` : '';
-      const mark = m.host ? ' ★' : m.ready === true ? ' <em class="ok">ready</em>' : m.ready === false ? ' <em>choosing</em>' : '';
-      const av = `<img class="av" alt="" src="${avatarDataUrl(avatarSeed(m.handle, m.avatar), m.classes, 2)}">`;
-      return chip(`${av}${esc(m.handle)}${classes}${mark}`, m.you ? 'you' : '');
-    })
-    .join('');
+  const party = h.party.map(memberChip).join('');
   if (h.mode === 'safehouse') {
-    hudEl.innerHTML = `<div class="row">${chip(`SAFEHOUSE ${esc(h.code)}`, 'tag')}${party}<span class="muted">${h.party.length}/4 · host starts the delve</span></div>`;
+    hudEl.innerHTML = `<div class="row">${chip(`SAFEHOUSE ${esc(h.code)}`, 'tag')}${party}<span class="muted">${h.party.length}/4</span></div>`;
     return;
   }
-  const traceCls = h.trace >= 75 ? 'hot' : h.trace >= 50 ? 'warm' : 'cool';
-  const deck = h.deck.length ? h.deck.map((d) => chip(`${esc(d.name)} ×${d.charges}`, 'prog')).join('') : '<span class="muted">deck empty</span>';
-  const enc = h.encounter
-    ? `<div class="row fight">${chip(`⚔ ROUND ${h.encounter.round}`, 'tag hot')}<b>${esc(h.encounter.name)}</b>${bar(h.encounter.hp, h.encounter.maxHp, 'hp')}<span>${h.encounter.hp}/${h.encounter.maxHp} HP</span></div>`
-    : '';
+  const cls = h.corruption >= 70 ? 'hot' : h.corruption >= 40 ? 'warm' : 'cool';
+  const relics = h.relics.map((r) => `<span class="chip prog" title="${esc(r.desc)}">${esc(r.name)}</span>`).join('');
   hudEl.innerHTML = `
     <div class="row">
-      ${chip(esc(h.code), 'tag')}<b class="corp">${esc(h.corp)}</b><span class="muted wide-only">${esc(h.district)} · runner @ ${esc(h.location)}</span>
+      ${chip(h.floor >= h.floors ? 'THE BOTTOM' : `FLOOR ${h.floor}/${h.floors - 1}`, 'tag')}
+      <span class="label">CORRUPTION</span>${bar(h.corruption, 100, cls)}<span class="${cls}">${h.corruption}%</span>
+      <span class="muted wide-only">seals ${h.seals}</span>
       <span class="wyrm ${h.wyrm.color}">${esc(h.wyrm.name)} <i class="wide-only">${esc(h.wyrm.title)}</i></span>
     </div>
-    <div class="row">
-      <span class="label">TRACE</span>${bar(h.trace, 100, traceCls)}<span class="${traceCls}">${h.trace}%</span>
-      <span class="sep"></span>${party}
-    </div>
-    <div class="row deck${h.deck.length ? '' : ' empty'}"><span class="label">DECK</span>${deck}${h.lastRoll ? `<span class="roll" title="last roll">${esc(h.lastRoll)}</span>` : ''}</div>
-    ${enc}`;
+    <div class="row">${party}${relics ? `<span class="sep"></span>${relics}` : ''}</div>`;
 }
 
 // ---------------------------------------------------------------- network
@@ -340,15 +331,14 @@ let ws: WebSocket;
 const queue: ServerMessage[] = [];
 let draining = false;
 
-// Messages are applied strictly in order so a dice roll finishes tumbling
-// before the outcome it caused is printed.
-async function drain() {
-  if (draining) return;
-  draining = true;
-  while (queue.length) {
-    const msg = queue.shift()!;
-    if (msg.type === 'out') {
-      // crew chat lines start with a magenta [handle]
+function crewMember(handle: string): HudMember | undefined {
+  const party = lastScene?.party ?? (lastHud && lastHud.mode !== 'street' ? lastHud.party : []);
+  return party.find((m) => m.handle === handle);
+}
+
+function apply(msg: ServerMessage) {
+  switch (msg.type) {
+    case 'out': {
       const chat = /^\x1b\[95m\[([^\]]+)\]\x1b\[0m ([\s\S]*)$/.exec(msg.text);
       if (chat) {
         sound.play('chat');
@@ -356,9 +346,9 @@ async function drain() {
         if (who) scene.chat(who, chat[2]!);
       }
       print(msg.text);
+      break;
     }
-    else if (msg.type === 'roll') await animateRoll(msg.roll);
-    else if (msg.type === 'hud') {
+    case 'hud':
       lastHud = msg.hud;
       renderHud(msg.hud);
       if (msg.hud.mode !== 'delve') {
@@ -366,51 +356,46 @@ async function drain() {
         lastActions = [];
         scene.setLobby(
           msg.hud.mode === 'street'
-            ? {
-                title: 'NEO-AVALON',
-                subtitle: 'create a safehouse, or join your crew',
-                ...(msg.hud.handle ? { crew: [{ handle: msg.hud.handle, avatar: msg.hud.avatar ?? 0, you: true }] } : {}),
-              }
-            : {
-                title: `SAFEHOUSE ${msg.hud.code}`,
-                subtitle: `${msg.hud.party.length}/4 netrunners · share the code`,
-                crew: msg.hud.party.map((m) => ({ handle: m.handle, avatar: m.avatar, host: m.host, you: m.you })),
-              },
+            ? { title: 'LAST LIGHT', subtitle: 'create a safehouse, or join your crew', ...(msg.hud.handle ? { crew: [{ handle: msg.hud.handle, avatar: msg.hud.avatar ?? 0, you: true }] } : {}) }
+            : { title: `SAFEHOUSE ${msg.hud.code}`, subtitle: `${msg.hud.party.length}/4 · share the code with your crew`, crew: msg.hud.party.map((m) => ({ handle: m.handle, avatar: m.avatar, host: m.host, you: m.you })) },
         );
         renderActions();
-        sound.setAmbience('lobby');
+        sound.setMood('lobby');
       }
-    } else if (msg.type === 'scene') {
+      break;
+    case 'scene': {
       const prev = lastScene;
-      if (msg.scene.view === 'combat' && prev && prev.view !== 'combat') sound.play('encounter');
       if (msg.scene.parley?.reply && msg.scene.parley.reply !== prev?.parley?.reply) sound.play('wyrm');
-      if (!prev || prev.view !== msg.scene.view) sound.setAmbience(msg.scene.view as Ambience);
+      if (!prev || prev.view !== msg.scene.view) sound.setMood(msg.scene.view as Mood);
       lastScene = msg.scene;
       lastActions = msg.actions;
       scene.setScene(msg.scene);
       renderActions();
-    } else if (msg.type === 'fx') {
-      scene.playFx(msg.fx);
-      if (msg.fx.kind === 'end') sound.play(msg.fx.win ? 'win' : 'lose');
-      else {
-        const sfx = FX_SOUND[msg.fx.kind];
-        if (sfx) sound.play(sfx);
-      }
+      break;
     }
-    else if (msg.type === 'prompt') {
+    case 'fx': {
+      scene.playFx(msg.fx);
+      const sfx = fxSound(msg.fx);
+      if (sfx) sound.play(sfx);
+      if (msg.fx.kind === 'end') sound.setMood('off');
+      break;
+    }
+    case 'prompt':
       prompt = msg.text;
       redraw();
-    } else if (msg.type === 'clear') {
+      break;
+    case 'clear':
       term.clear();
       redraw();
-    }
+      break;
   }
-  draining = false;
 }
 
-function crewMember(handle: string): HudMember | undefined {
-  const party = lastScene?.party ?? (lastHud && lastHud.mode !== 'street' ? lastHud.party : []);
-  return party.find((m) => m.handle === handle);
+async function drain() {
+  if (draining) return;
+  draining = true;
+  while (queue.length) apply(queue.shift()!);
+  draining = false;
 }
 
 function send(msg: ClientMessage) {
@@ -426,12 +411,12 @@ function connect() {
     void drain();
   };
   ws.onclose = () => {
-    queue.push({ type: 'prompt', text: '' }, { type: 'out', text: '\r\n\x1b[91m>> connection to the net lost. refresh to jack back in.\x1b[0m' });
+    queue.push({ type: 'prompt', text: '' }, { type: 'out', text: '\r\n\x1b[91m>> connection lost. refresh to reconnect.\x1b[0m' });
     void drain();
   };
 }
 
-print('\x1b[2mdialing the net...\x1b[0m');
+print('\x1b[2mreaching into the net...\x1b[0m');
 renderActions();
-sound.setAmbience('lobby');
+sound.setMood('lobby');
 connect();

@@ -1,40 +1,41 @@
-# ICEBREAKER
+# LAST LIGHT
 
-A co-op cyberpunk dungeon delve for 2-4 players, played in a shared terminal in the browser.
+A co-op descent for 2-4 players, played in the browser.
 
-In Neo-Avalon the corporations keep their secrets the old way: in vaults, guarded by ancient AI wyrms chained beneath their towers. Your crew delves a corp's network like a dungeon. Rooms are nodes, ICE programs are the monsters, and the vault is a dragon's hoard. Pull `payload.dat` out before the trace meter hits 100%.
+Beneath the neon city of Neo-Avalon, something ancient is waking: the Devourer, an AI wyrm. When it wakes, every mind in the city goes dark. Your crew is a handful of small mythical spirits of the net, and you are the last light. Descend through the haunted net, fight what lives there, and seal the Devourer at the bottom before corruption takes the city.
 
-It plays like a little arcade cabinet. The top of the screen is an animated neon scene: a rain-soaked city intro, a dungeon map where your rogue glides between rooms while packets flow down the corridors, turn-based fights against animated ICE monsters, a big d20 that tumbles for every risky roll, and the wyrm itself, coiled around the vault, breathing, with an eye that narrows as it gets suspicious. Under the scene sit buttons for whatever you can do right now, and at the bottom a compact terminal for the log and crew chat. You can click rooms on the map, press buttons, or type; anything you type that isn't a command goes to your crew.
+## How it plays
 
-Everything has sound: chiptune effects synthesized live with the Web Audio API (dice that tick as they tumble and land with a fanfare or a sad trombone, unlock arpeggios, alarms, hits, the wyrm's growl) over a quiet rain-and-drone ambience that shifts with the scene. A toggle in the corner mutes it and remembers your choice.
+One meter matters: **corruption**. It's the crew's shared life. If it reaches 100%, the city falls.
 
-It works on phones too: the map turns vertical, buttons become one swipeable row of thumb-sized targets, and touch devices get a proper input box instead of typing into the terminal.
+Every horror **shows its next move** above its head before you act, so every choice has a reason:
 
-Every netrunner is a little pixel-art creature, grown procedurally from their handle: an arcade-style alien with its own colors, eyes and limbs, deliberately not human. Your class adds gear on top (a hood for the rogue, an antenna crown for the mage, a halo and chest glyph for the cleric) so your creature stays the same whichever role you're dealt. They line up in the safehouse, stand in formation in fights, walk the map as the rogue's token, and pop up in the corner of the scene whenever someone chats. Don't like yours? `reroll` grows a new one.
+| you see | do this |
+| --- | --- |
+| an attack (`RAKE 21`) | the **Guardian** Wards it: blocked completely |
+| a charge (`CHARGING LUNGE`) | the **Mystic** Hexes it: interrupted. Otherwise a huge hit lands next round |
+| a shell (`CARAPACE`) | strikes do half; the Mystic's **Bolt** pierces |
+| a wail (`WHISPER 15`) | can't be blocked; the Guardian **Mends** afterwards |
 
-Nobody sees the whole picture, so you win by talking to each other:
+Three classes, two buttons each:
 
-- **Runner (rogue)** walks the dungeon under fog of war: their map only shows rooms they've visited and the doors next to them. They pick locks, loot programs and parley with the wyrm.
-- **Operator (mage)** sees the whole stolen schematic on their map: every room, the port that opens each lock, where the intel is and where the ICE lairs. In a fight they hurl bolts and analyze weak points.
-- **Sentry (cleric)** is the only one who sees the hunting patrol, a red eye drifting across the map. They heal trace with `spoof` and raise shields in a fight.
+- **Striker**: Strike (8 damage, double on an exposed foe) or Fury (16 damage, but it corrupts the crew).
+- **Mystic**: Hex (exposes the foe so Strike hits ×2, and interrupts charges) or Bolt (pierces shells).
+- **Guardian**: Ward (blocks this round's attack) or Mend (cleanses corruption).
 
-With two players one person plays mage and cleric; with four, two share the mage's schematic. Roles pass to someone else if a player drops.
+Everyone picks at the same time; the round resolves when the whole crew is ready. With two players one person is Mystic and Guardian and acts twice. Between fights the crew **votes on the way down**: a horror (each one you beat puts a seal on the Devourer, making the final fight easier), a dread lair (harder, more seals and a relic), a shrine (rest), or a relic cache. Relics are simple passives like "Strike deals +3".
 
-## The wyrms
+At the bottom waits the Devourer, one of five wyrm breeds, each with a temperament ("craves worship", "loves procedure", "holds grudges"...). Anyone can spend their turn **speaking to it** instead of attacking. With an OpenAI key, an LLM plays the wyrm and judges how well you played to its nature; good words wound it, insults enrage it. The server caps what a single speech can do, so no clever line skips the fight.
 
-Each vault is guarded by one of five chromatic wyrm breeds, and each wants to be handled differently. A **Red** wyrm is proud and wants worship. A **Blue** wyrm is a bureaucrat that won't open without the maintenance ticket being cited. A **Green** wyrm lies, loves deals and whispers privately to crew members to turn them on each other. A **Black** wyrm bears grudges and barely calms down. A **White** wyrm is lazy and can be bored into letting you through.
+The balance simulator (`npm run balance`) plays hundreds of games with bot crews: a crew that reads intents wins about 95% of the time, finishing tense at around 45% corruption, while a crew that mashes random buttons wins about 26%. Strategy is the game.
 
-You can open the vault with a 6-digit code whose fragments are scattered across the network, or you can talk your way past the wyrm using intel found in files (the sysadmin's name, an open maintenance ticket, the sysadmin's cat). With an OpenAI API key, the wyrm is an LLM playing its breed's personality and tracking its own suspicion. The server enforces the real rules either way: access needs at least two genuine pieces of intel (and the ticket, for Blue), so jailbreaking the model doesn't skip the puzzle.
+## What it looks and sounds like
 
-## Dice, fights and loot
-
-Risky actions roll a d20 that tumbles in everyone's terminal. Picking a lock is d20 + 4 against the node's DC; a natural 20 opens it silently and a natural 1 sets off the alarm and pulls the patrol. Walking into the patrol is a stealth check.
-
-Two rooms per network are ICE lairs. Entering one starts a turn-based fight: every player picks one action per round (strike, flee, bolt, analyze, shield, cast a program or wait), it resolves when everyone's locked in or after 30 seconds, and the monster hits back with trace. Slain ICE drops a program.
-
-Programs are the party's spells, with limited charges: `ghost.exe` hides the runner from the patrol, `babel.dll` reveals the wyrm's weakness, `icepick.exe` shatters a lock, `nova.exe` blasts ICE in a fight, `mend.sys` scrubs trace. The runner `take`s them from rooms and anyone can `cast` them.
-
-With an API key, an LLM dungeon master narrates the opening, quiet rooms, kills and the ending in a line or two. Without one, a scripted narrator does it.
+- **Players** are procedural pixel-art mythical creatures (kitsune, griffin, naga, oni, phoenix, wisp, tengu), grown from your handle, with class gear on top: a blade, a rune orb, a shield. `reroll` grows a new one.
+- **Horrors** are original, horror-film inspired: the Crimson Face, the Hollow Bride, the Husk Stalker, the Many-Elbowed. They flicker, glitch, and lunge at the camera.
+- **Fights** move: heroes dash in and slash, bolts arc across the screen, wards dome over the crew, and corruption creeps in from the screen's edges as veins.
+- **Sound** is synthesized live: effects with random variation so nothing repeats exactly, and generative music that drifts from a calm descent theme to a heartbeat in fights and an uneasy theme for the Devourer. A toggle mutes it and remembers.
+- **Phones** work: the layout stacks, buttons are thumb-sized, touch devices get a real input box.
 
 ## Running it
 
@@ -43,13 +44,13 @@ npm install
 npm run dev            # builds the client and starts the server on http://localhost:3000
 ```
 
-Open the page in two browser tabs (or on two machines), pick handles, `create` a safehouse in one and `join <code>` in the other, then `start`.
+Open the page in two browser tabs (or on two devices), pick names, create a safehouse in one and join with its code in the other, then begin the descent.
 
 Optional environment variables (see `.env.example`):
 
-- `OPENAI_API_KEY`: turns on the LLM wyrm and dungeon master. Without it, scripted versions are used, which is enough to play and test.
+- `OPENAI_API_KEY`: turns on the LLM wyrm and narrator. Without it, scripted versions are used.
 - `OPENAI_MODEL`: defaults to `gpt-4o-mini`. Any chat-completions model with JSON mode works.
-- `ALLOW_SOLO=1`: lets one player start a delve with all three roles, for development.
+- `ALLOW_SOLO=1`: lets one player start alone with all three classes, for development.
 - `PORT`: defaults to 3000.
 
 Production: `npm run build && npm start`.
@@ -58,28 +59,23 @@ Production: `npm run build && npm start`.
 
 ```
 src/server/index.ts          HTTP + WebSocket server, static files
-src/server/hub.ts            lobby, handles, safehouse codes, host/start/leave
-src/server/ai.ts             thin OpenAI wrapper shared by the wyrm and the DM
-src/server/game/world.ts     seeded network generation: rooms, locks, intel, lairs, programs
-src/server/game/game.ts      roles, commands, trace, patrol, parley, deck, HUD
-src/server/game/combat.ts    turn-based ICE encounters
-src/server/game/breeds.ts    the five wyrm breeds: personalities and rules
-src/server/game/bestiary.ts  ICE monsters and programs
-src/server/game/dice.ts      d20 checks with crits and fumbles
-src/server/game/ice.ts       the wyrm's brain: LLM, scripted fallback, intel verification
-src/server/game/narrator.ts  the dungeon master
-src/client/main.ts           terminal, line editor, action buttons, HUD, message queue
-src/client/scene.ts          the animated canvas scene: city, map, fights, wyrm, dice, effects
-src/client/sound.ts          synthesized sound effects and ambience
-src/client/avatar.ts         procedural pixel-creature avatars with class gear
-test/                        world invariants, full delves, combat, breeds, programs
-scripts/balance.mts          simulates 400 delves with a bot crew to tune difficulty
+src/server/hub.ts            lobby, names, safehouse codes, host/start/leave, avatar rerolls
+src/server/ai.ts             thin OpenAI wrapper shared by the wyrm and the narrator
+src/server/game/game.ts      the descent: route votes, fights, rounds, seals, relics, the end
+src/server/game/content.ts   every number and name: classes, moves, horrors, relics, rooms
+src/server/game/breeds.ts    the five wyrm breeds and how they like to be spoken to
+src/server/game/parley.ts    judging speeches to the Devourer (LLM or scripted, server-capped)
+src/server/game/narrator.ts  a line of narration at the moments that matter
+src/client/main.ts           terminal, buttons, HUD, message handling
+src/client/scene.ts          the animated canvas: city, descent, horrors, the Devourer, effects
+src/client/avatar.ts         procedural pixel-art mythical creatures
+src/client/sound.ts          synthesized effects and generative music
+test/                        game rules, combos, voting, speech, lobby
+scripts/balance.mts          bot crews that prove strategy matters
 ```
-
-The server owns all state. Each player gets their own role-filtered scene (so the rogue's client never even receives the ports), a list of buttons for what they can do right now, and effect events (unlock, hit, heal, slay, alarm) that the client animates. All art is procedural canvas drawing and all audio is synthesized, so there are no image or sound assets. The `Session` interface in `hub.ts` is transport-agnostic, which leaves room for an SSH front door later.
 
 ```bash
 npm test           # node:test via tsx
 npm run typecheck
-npm run balance    # win rate and trace distribution for a competent bot crew
+npm run balance
 ```
