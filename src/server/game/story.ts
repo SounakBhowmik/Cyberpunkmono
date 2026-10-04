@@ -67,6 +67,8 @@ export interface Story {
   chapters: number;
   /** Foe damage multiplier for this story. */
   difficulty?: number;
+  /** No timers, one player plays every role, and nothing is saved (the tutorial). */
+  practice?: boolean;
   start: string;
   lose: { title: Text; text: Text };
   nodes: Record<string, StoryNode>;
@@ -451,7 +453,70 @@ const survival: Story = {
   },
 };
 
-export const STORIES: Record<ModeId, Story> = { adventure, heist, survival };
+// ---------------------------------------------------------------- tutorial
+// One player, every role, no timers. A training construct shows each kind of
+// monster move in order, and the tips (sent by the engine) say which key answers it.
+
+const tutorial: Story = {
+  id: 'tutorial',
+  title: 'Training',
+  pitch: 'learn the controls, the roles and how to read a monster',
+  meterName: 'strain',
+  chapters: 3,
+  practice: true,
+  difficulty: 0.5,
+  start: 'welcome',
+  lose: { title: 'Try Again', text: 'The construct flickers off. "Again," says the old spirit. "Watch what it is about to do, and answer it."' },
+  nodes: {
+    welcome: {
+      chapter: 1, title: 'Reading a Monster', backdrop: 'street', music: 'story',
+      lines: [
+        { who: 'narrator', text: 'An old spirit meets you in an empty street. "In a real crew there are three of you: a Rogue, a Mage and a Cleric. Today you play all three."' },
+        { who: 'narrator', text: '"The Mage sees what a monster will do next. Everyone else only knows if the Mage tells them. Watch the badge above the monster."' },
+        { who: 'narrator', text: '"Every move has a key. On a keyboard, press it. On a phone, tap the round button with the same letter."' },
+      ],
+      step: {
+        kind: 'choice',
+        prompt: 'Ready to try it? Press 1, or tap the card.',
+        options: [{ label: 'Bring on the construct', detail: 'a practice fight with no timer', icon: 'fight', next: 'drill' }],
+      },
+    },
+    drill: {
+      chapter: 1, title: 'Reading a Monster', backdrop: 'street', music: 'combat',
+      lines: [{ who: 'narrator', text: '"Each round, pick one move for each role. When all three are chosen, the round plays out."' }],
+      step: { kind: 'fight', foe: 'dummy', next: 'lock' },
+    },
+    lock: {
+      chapter: 2, title: 'Glyph Locks', backdrop: 'vault', music: 'tense',
+      lines: [
+        { who: 'narrator', text: '"Some doors are sealed with glyphs. The Mage can read the order; only the Rogue can press them."' },
+        { who: 'narrator', text: '"In a crew, the Mage shows the Rogue one glyph at a time. Today you can read it yourself: it is at the top. Press 1 to 5 for the glyphs, in order."' },
+      ],
+      step: { kind: 'puzzle', length: 3, success: 'talk', failure: 'talk' },
+    },
+    talk: {
+      chapter: 3, title: 'Words', backdrop: 'shrine', music: 'story',
+      lines: [
+        { who: 'narrator', text: '"Not everything is won with a blade. Sometimes you must convince someone, in your own words."' },
+        { who: 'narrator', text: '"Press T, type what you want to say, and send it. The Oracle wants a true and selfless reason to help you."' },
+      ],
+      step: { kind: 'parley', npc: 'oracle', goal: 6, lines: 3, success: 'done', failure: 'done' },
+    },
+    done: {
+      chapter: 3, title: 'Words', backdrop: 'city', music: 'victory',
+      lines: [],
+      step: {
+        kind: 'ending',
+        title: 'Training Complete',
+        text: '"Good. Remember: the Mage calls it, the Cleric Wards attacks, Hex breaks a charge, Bolt cracks a shell, and Mend cleans up after a wail. In real fights a timer ticks, and anyone who has not chosen when it runs out leaves the crew open. Now go find your crew."',
+      },
+    },
+  },
+};
+
+export const STORIES: Record<ModeId, Story> = { adventure, heist, survival, tutorial };
+/** The stories a crew can pick in the safehouse. */
+export const CREW_STORIES: ModeId[] = ['adventure', 'heist', 'survival'];
 
 export function text(t: Text, c: StoryCtx): string {
   return typeof t === 'function' ? t(c) : t;

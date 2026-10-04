@@ -1,0 +1,10 @@
+{
+  "name": "LAST LIGHT",
+  "short_name": "LAST LIGHT",
+  "description": "A co-op story game for 2-4 players beneath a neon city.",
+  "start_url": "/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#07060d",
+  "theme_color": "#07060d"
+}

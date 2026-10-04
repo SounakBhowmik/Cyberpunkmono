@@ -24,6 +24,44 @@ export const NUM = {
   /** Global balance dials. */
   foeDmg: 1.6,
   foeHp: 1.5,
+  /** The monster attacks when this runs out, ready or not. */
+  roundMs: 15_000,
+  bossRoundMs: 20_000,
+  /** Each crew member still undecided at the buzzer adds this much... */
+  flatFooted: 6,
+  /** ...and the monster's hit that round lands this much harder. */
+  flatFootedMult: 1.25,
+};
+
+/**
+ * The Warden watches every round and scores each player on how well they
+ * answered the threat. Points are per player, so a crew can also compete.
+ */
+export const WARDEN = {
+  cleanWard: 15,
+  wastedWard: -5,
+  brokeCharge: 15,
+  setUpHex: 5,
+  pierce: 12,
+  bluntStrike: 0,
+  double: 10,
+  strike: 5,
+  fury: 4,
+  doubleFury: 14,
+  timelyMend: 10,
+  mend: 3,
+  goodCall: 8,
+  quick: 5,
+  /** acted in the first third of the timer */
+  quickShare: 1 / 3,
+  flatFooted: -10,
+  slay: 20,
+  killingBlow: 10,
+  glyph: 5,
+  badGlyph: -5,
+  showGlyph: 3,
+  /** per point the parley judge gave a line */
+  persuasion: 3,
 };
 
 export interface MoveSpec {
@@ -64,6 +102,8 @@ export interface FoeSpec {
   hp: number;
   moves: IntentSpec[];
   intro: string;
+  /** A fixed order of moves instead of random ones (the tutorial's training dummy). */
+  script?: IntentSpec[];
 }
 
 export const FOES: Record<string, FoeSpec> = {
@@ -113,6 +153,23 @@ export const FOES: Record<string, FoeSpec> = {
     ],
   },
 };
+
+/** The tutorial's punching bag: it shows every kind of move, in order. */
+export const DUMMY: FoeSpec = {
+  id: 'sentinel',
+  name: 'Training Construct',
+  hp: 30,
+  intro: 'A practice construct flickers on, a faceless knight of soft white light. It will show you every trick a monster has.',
+  moves: [{ kind: 'attack', amount: 6, verb: 'SWIPE', weight: 1 }],
+  script: [
+    { kind: 'attack', amount: 6, verb: 'SWIPE', weight: 1 },
+    { kind: 'charge', amount: 14, verb: 'BIG SWING', weight: 1 },
+    { kind: 'shell', amount: 0, verb: 'GUARD UP', weight: 1 },
+    { kind: 'wail', amount: 4, verb: 'SCREECH', weight: 1 },
+  ],
+};
+
+FOES.dummy = DUMMY;
 
 export const WYRM_FOE: Omit<FoeSpec, 'name'> = {
   id: 'wyrm',

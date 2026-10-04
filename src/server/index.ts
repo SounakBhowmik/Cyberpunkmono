@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { MAX_LINE_LENGTH, type ClientMessage, type ActionButton, type FeedItem, type Fx, type HudState, type SceneState, type ServerMessage } from '../shared/protocol.js';
+import { MAX_LINE_LENGTH, type ClientMessage, type ActionButton, type Checkpoint, type FeedItem, type Fx, type HudState, type SceneState, type ServerMessage } from '../shared/protocol.js';
 import { createAi } from './ai.js';
 import { createJudge } from './game/parley.js';
 import { createNarrator } from './game/narrator.js';
@@ -16,6 +16,7 @@ const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
+  '.webmanifest': 'application/manifest+json',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
@@ -24,7 +25,7 @@ const MIME: Record<string, string> = {
 const ai = createAi();
 const judge = createJudge(ai);
 const narrator = createNarrator(ai);
-const hub = new Hub({ judge, narrator, minPlayers: process.env.ALLOW_SOLO === '1' ? 1 : 2 });
+const hub = new Hub({ judge, narrator });
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
@@ -71,6 +72,9 @@ class WsSession implements Session {
   feed(item: FeedItem) {
     this.push({ type: 'feed', item });
   }
+  checkpoint(checkpoint: Checkpoint | null) {
+    this.push({ type: 'checkpoint', checkpoint });
+  }
   clear() {
     this.push({ type: 'clear' });
   }
@@ -106,6 +110,7 @@ wss.on('connection', (ws: WebSocket) => {
     } catch {
       return;
     }
+    if (msg?.type === 'resume') return hub.resume(session.id, msg.checkpoint);
     if (msg?.type !== 'line' || typeof msg.text !== 'string') return;
     // Strip control characters so players can't inject ANSI into each other's terminals.
     const text = msg.text.slice(0, MAX_LINE_LENGTH).replace(/[\x00-\x1f\x7f-\x9f]/g, '');

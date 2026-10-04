@@ -8,7 +8,8 @@ import type { Mood } from '../shared/protocol';
 export type Sfx =
   | 'click' | 'vote' | 'strike' | 'fury' | 'hex' | 'bolt' | 'ward' | 'mend' | 'speak'
   | 'foeHit' | 'blocked' | 'charge' | 'wail' | 'stun' | 'slay' | 'bossSlay'
-  | 'boon' | 'glyphOk' | 'glyphBad' | 'title' | 'win' | 'lose' | 'chat' | 'npc' | 'notice';
+  | 'boon' | 'glyphOk' | 'glyphBad' | 'title' | 'win' | 'lose' | 'chat' | 'npc' | 'notice'
+  | 'tick' | 'score' | 'achieve' | 'flat';
 
 export type { Mood };
 
@@ -315,6 +316,19 @@ export class Sound {
         break;
       case 'lose':
         arp([7, 6, 5, 4], 0.25, { type: 'sawtooth', vol: 0.09 });
+        break;
+      case 'tick':
+        // the last seconds before the monster moves
+        this.tone({ type: 'square', freq: 1760, dur: 0.04, vol: 0.05 });
+        break;
+      case 'score':
+        this.tone({ type: 'triangle', freq: jit(1320, 0.03), dur: 0.12, vol: 0.05 });
+        break;
+      case 'achieve':
+        arp([12, 16, 19, 24, 28], 0.07, { type: 'triangle', vol: 0.1 });
+        break;
+      case 'flat':
+        this.tone({ type: 'sawtooth', freq: 220, to: 90, dur: 0.4, vol: 0.12 });
         break;
     }
   }

@@ -1,6 +1,6 @@
 // A bot crew that plays LAST LIGHT through the real Game API. Used by the
 // tests (to walk every story) and by the balance simulator.
-import type { ActionButton, FeedItem, Fx, HudState, ModeId, SceneState } from '../src/shared/protocol.js';
+import type { ActionButton, Checkpoint, FeedItem, Fx, HudState, ModeId, SceneState } from '../src/shared/protocol.js';
 import { Game, type GamePlayer, type GameResult } from '../src/server/game/game.js';
 import type { ParleyJudge } from '../src/server/game/parley.js';
 
@@ -32,6 +32,10 @@ export class FakePlayer implements GamePlayer {
   }
   fx(f: Fx) {
     this.fxs.push(f);
+  }
+  checkpoints: (Checkpoint | null)[] = [];
+  checkpoint(cp: Checkpoint | null) {
+    this.checkpoints.push(cp);
   }
   get transcript() {
     return [...this.out, ...this.feeds.map((f) => ('text' in f ? f.text : ''))].join('\n');

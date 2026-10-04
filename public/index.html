@@ -4,8 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#07060d" />
+    <meta name="screen-orientation" content="landscape" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>LAST LIGHT</title>
     <meta name="description" content="A co-op story game for 2-4 players: adventure, heist or survival beneath a neon city where an ancient AI wyrm is waking." />
+    <link rel="manifest" href="manifest.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
@@ -17,18 +20,31 @@
       <header>
         <span class="logo">LAST LIGHT</span>
         <span class="hint">a co-op story for 2-4 players</span>
+        <button id="menu-btn" class="sound-toggle" type="button">☰ menu</button>
         <button id="log" class="sound-toggle" type="button" aria-pressed="false">⌨ log</button>
         <button id="sound" class="sound-toggle" type="button" aria-pressed="true">♪ on</button>
       </header>
       <section id="hud" aria-live="polite"></section>
-      <section class="stage"><canvas id="scene" aria-label="animated view of the delve"></canvas></section>
+      <section class="stage"><canvas id="scene" aria-label="animated view of the story"></canvas></section>
       <nav id="actions" aria-label="actions"></nav>
       <div id="terminal"></div>
       <form id="cmdbar" autocomplete="off">
-        <input id="cmd" type="text" enterkeyhint="send" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="talk to your crew, or type a command" aria-label="command" maxlength="300" />
+        <input id="cmd" type="text" enterkeyhint="send" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="press Enter to chat with your crew" aria-label="chat or command" maxlength="300" />
         <button type="submit">send</button>
       </form>
     </main>
+
+    <!-- phones: a slide-in panel with the log and a small keyboard of its own -->
+    <aside id="drawer" aria-label="log and chat" aria-hidden="true">
+      <div class="drawer-head"><b>log &amp; chat</b><button id="drawer-close" type="button" aria-label="close">✕</button></div>
+      <div id="drawer-log"></div>
+      <div id="drawer-input"></div>
+      <div id="minikeys"></div>
+    </aside>
+
+    <div id="menu" role="dialog" aria-label="main menu"></div>
+    <div id="results" role="dialog" aria-label="story results" hidden></div>
+    <div id="rotate"><div><span class="phone">📱</span><b>Turn your phone sideways</b><small>LAST LIGHT plays in landscape.</small></div></div>
     <script type="module" src="app.js"></script>
   </body>
 </html>

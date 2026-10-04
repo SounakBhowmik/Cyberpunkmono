@@ -1,10 +1,10 @@
 import type {
-  ActionButton, ClassId, FeedItem, Foe, Fx, Glyph, HudMember, HudState, ModeId, Move, Portrait, SceneState, WyrmInfo,
+  ActionButton, Checkpoint, ClassId, FeedItem, Foe, Fx, Glyph, HudMember, HudState, ModeId, Move, PlayerStats, Portrait, RunResult, SceneState, WyrmColor, WyrmInfo,
 } from '../../shared/protocol.js';
 import { c } from '../ansi.js';
 import { BREEDS, BREED_IDS, type Breed } from './breeds.js';
 import {
-  BOONS, CALLS, CLASS_MOVES, CLASS_NAME, DISTRICTS, FOES, GLYPHS, GLYPH_CHAR, MOVES, NUM, WYRM_FOE, intentOf,
+  BOONS, CALLS, CLASS_MOVES, CLASS_NAME, DISTRICTS, FOES, GLYPHS, GLYPH_CHAR, MOVES, NUM, WARDEN, WYRM_FOE, intentOf,
   type FoeSpec, type IntentSpec,
 } from './content.js';
 import { SilentNarrator, type Narrator } from './narrator.js';
@@ -23,6 +23,8 @@ export interface GamePlayer {
   setScene(scene: SceneState, actions: ActionButton[]): void;
   feed(item: FeedItem): void;
   fx(fx: Fx): void;
+  /** A chapter checkpoint to save (null clears it when the story ends). */
+  checkpoint?(cp: Checkpoint | null): void;
 }
 
 export interface GameResult {
@@ -30,6 +32,8 @@ export interface GameResult {
   title: string;
   meter: number;
   seconds: number;
+  stars: number;
+  team: number;
 }
 
 export interface GameOptions {
@@ -44,6 +48,8 @@ export interface GameOptions {
   roundMs?: number;
   /** Vote timer in ms. 0 disables it (tests). */
   voteMs?: number;
+  /** Pick the story back up from a saved chapter. */
+  checkpoint?: Checkpoint;
 }
 
 type Phase = 'story' | 'choice' | 'puzzle' | 'parley' | 'combat' | 'boss' | 'ended';
@@ -69,7 +75,12 @@ interface Queued {
   cls: ClassId;
   move: Move;
   amount?: number;
+  /** when it was chosen, for the Warden's quick-thinking bonus */
+  at: number;
 }
+
+type Stats = Omit<PlayerStats, 'handle' | 'you'>;
+const blankStats = (): Stats => ({ points: 0, cleanWards: 0, brokenCharges: 0, pierced: 0, doubles: 0, goodCalls: 0, idle: 0, glyphs: 0, persuasion: 0 });
 
 interface ParleyState {
   npc: string;
@@ -135,22 +146,60 @@ export class Game {
   private bossTalk: { said?: string; saidBy?: string; reply?: string } = {};
   private lastChoice?: string;
   private timer?: NodeJS.Timeout;
+  private deadline = 0;
+  private timerTotal = 0;
+  private roundStarted = 0;
+  private firstCall?: string;
+  private lastFoeMove?: string;
+  private shownGlyph = -1;
+  private glyphMisses = 0;
+  /** The Warden's tally, by handle so it survives a reconnect or a resume. */
+  private readonly stats = new Map<string, Stats>();
 
   constructor(players: GamePlayer[], private readonly opts: GameOptions) {
     const seed = opts.seed ?? Math.floor(Math.random() * 2 ** 31);
     this.rng = new Rng(seed);
-    this.story = STORIES[opts.story ?? 'adventure'];
-    this.breed = BREEDS[this.rng.pick(BREED_IDS)];
-    this.wyrmName = this.rng.pick(this.breed.names);
+    const cp = opts.checkpoint;
+    this.story = STORIES[cp?.story ?? opts.story ?? 'adventure'];
+    this.breed = BREEDS[cp?.breed ?? this.rng.pick(BREED_IDS)];
+    this.wyrmName = cp && this.breed.names.includes(cp.wyrm) ? cp.wyrm : this.rng.pick(this.breed.names);
     this.district = this.rng.pick(DISTRICTS);
     this.corp = this.rng.pick(CORPS);
     this.narrator = opts.narrator ?? new SilentNarrator();
 
-    for (const p of players) this.players.set(p.id, p);
+    for (const p of players) {
+      this.players.set(p.id, p);
+      this.stats.set(p.handle, { ...blankStats(), points: cp?.points[p.handle] ?? 0 });
+    }
     this.assignClasses(this.rng.shuffle(players.map((p) => p.id)));
-    this.emit({ kind: 'title', title: this.story.title, subtitle: this.story.pitch });
+    if (cp) {
+      this.meter = cp.meter;
+      for (const b of cp.boons) this.boons.add(b);
+      for (const f of cp.flags) this.flags.add(f);
+    }
+    this.emit({ kind: 'title', title: this.story.title, subtitle: cp ? `resuming at chapter ${cp.chapter}` : this.story.pitch });
     for (const p of players) this.brief(p);
-    this.enterNode(this.story.start);
+    this.enterNode(cp?.node ?? this.story.start);
+  }
+
+  /** Check a checkpoint sent by a client before trusting it. */
+  static validCheckpoint(cp: unknown): cp is Checkpoint {
+    if (!cp || typeof cp !== 'object') return false;
+    const c = cp as Partial<Checkpoint>;
+    const story = typeof c.story === 'string' ? STORIES[c.story as ModeId] : undefined;
+    return (
+      c.v === 1 &&
+      !!story &&
+      !story.practice &&
+      typeof c.node === 'string' &&
+      !!story.nodes[c.node] &&
+      Number.isInteger(c.meter) && c.meter! >= 0 && c.meter! < 100 &&
+      Array.isArray(c.boons) && c.boons.length <= 8 && c.boons.every((b) => typeof b === 'string' && b in BOONS) &&
+      Array.isArray(c.flags) && c.flags.length <= 20 && c.flags.every((f) => typeof f === 'string' && f.length <= 24) &&
+      typeof c.breed === 'string' && BREED_IDS.includes(c.breed as WyrmColor) &&
+      typeof c.wyrm === 'string' &&
+      !!c.points && typeof c.points === 'object' && Object.values(c.points).every((n) => Number.isInteger(n) && Math.abs(n as number) < 100_000)
+    );
   }
 
   // ---------------------------------------------------------------- setup
@@ -222,6 +271,30 @@ export class Game {
 
   private has(id: string, cls: ClassId) {
     return this.classes.get(id)?.includes(cls) ?? false;
+  }
+
+  private statsOf(id: string): Stats {
+    const handle = this.players.get(id)?.handle ?? id;
+    let st = this.stats.get(handle);
+    if (!st) this.stats.set(handle, (st = blankStats()));
+    return st;
+  }
+
+  /** The Warden awards (or docks) points and shows it over the player's head. */
+  private award(id: string, points: number, reason: string, stat?: keyof Omit<Stats, 'points'>, quiet = false) {
+    const st = this.statsOf(id);
+    st.points += points;
+    if (stat) st[stat]++;
+    if (!quiet && points !== 0) this.emit({ kind: 'score', by: this.players.get(id)?.handle ?? '', points, reason });
+  }
+
+  private scoreLines(viewer: string) {
+    return [...this.players.values()].map((p) => ({ handle: p.handle, points: this.statsOf(p.id).points, you: p.id === viewer }));
+  }
+
+  private timerView() {
+    if (!this.timer || !this.timerTotal) return {};
+    return { timer: { leftMs: Math.max(0, this.deadline - Date.now()), totalMs: this.timerTotal } };
   }
 
   private party(viewer: string): HudMember[] {
@@ -316,7 +389,34 @@ export class Game {
         ? { parley: { npc: 'wyrm', name: this.wyrmName, progress: 0, goal: 0, linesLeft: 0, ...this.bossTalk } }
         : {}),
       ...(foe ? { foe, round: this.round, wards: this.wardsLeft() } : {}),
-      ...(this.ending ? { ending: this.ending } : {}),
+      ...(this.ending ? { ending: this.ending, result: this.result(id) } : {}),
+      ...this.timerView(),
+      scores: this.scoreLines(id),
+    };
+  }
+
+  private stars(win: boolean) {
+    if (!win) return 0;
+    return this.meter <= 30 ? 3 : this.meter <= 60 ? 2 : 1;
+  }
+
+  private result(viewer: string): RunResult {
+    const win = this.ending?.win ?? false;
+    const players = [...this.players.values()].map((p) => ({ handle: p.handle, you: p.id === viewer, ...this.statsOf(p.id) }));
+    const best = [...players].sort((a, b) => b.points - a.points)[0];
+    const team = Math.max(0, players.reduce((sum, p) => sum + p.points, 0) + (win ? 200 + (100 - this.meter) * 2 : 0));
+    return {
+      story: this.story.id,
+      title: this.ending?.title ?? '',
+      win,
+      meter: this.meter,
+      seconds: Math.round((Date.now() - this.startedAt) / 1000),
+      stars: this.stars(win),
+      team,
+      ...(best && best.points > 0 && players.length > 1 ? { mvp: best.handle } : {}),
+      flags: [...this.flags],
+      glyphMisses: this.glyphMisses,
+      players,
     };
   }
 
@@ -448,6 +548,7 @@ export class Game {
     const ctx = this.ctx();
 
     if (node.chapter !== this.chapter) {
+      if (node.chapter >= 2 && !this.story.practice) this.saveCheckpoint(id, node);
       this.chapter = node.chapter;
       this.wards = NUM.wardsPerChapter + (this.boons.has('fortified') ? 1 : 0);
       this.wardsUsed = 0;
@@ -484,6 +585,26 @@ export class Game {
       case 'ending':
         return this.end(true, text(step.title, ctx), text(step.text, ctx));
     }
+  }
+
+  private saveCheckpoint(nodeId: string, node: StoryNode) {
+    const cp: Checkpoint = {
+      v: 1,
+      story: this.story.id,
+      node: nodeId,
+      chapter: node.chapter,
+      title: node.title,
+      meter: this.meter,
+      boons: [...this.boons],
+      flags: [...this.flags],
+      breed: this.breed.id,
+      wyrm: this.wyrmName,
+      points: Object.fromEntries([...this.players.values()].map((p) => [p.handle, this.statsOf(p.id).points])),
+      crew: [...this.players.values()].map((p) => p.handle),
+      savedAt: Date.now(),
+    };
+    for (const p of this.players.values()) p.checkpoint?.(cp);
+    this.notice(`Checkpoint saved: chapter ${node.chapter}.`, 'info');
   }
 
   private apply(e: Effects) {
@@ -523,8 +644,8 @@ export class Game {
     this.votes.clear();
     this.options = step.options.filter((o) => (!o.requires || this.flags.has(o.requires)) && (!o.forbids || !this.flags.has(o.forbids)));
     this.log(c.bold(text(step.prompt, this.ctx())) + '\n' + this.options.map((o, i) => `  ${i + 1}. ${text(o.label, this.ctx())} ${c.dim(`· ${text(o.detail, this.ctx())}`)}`).join('\n'));
+    this.startTimer(this.story.practice ? 0 : (this.opts.voteMs ?? 40_000), () => this.resolveVote());
     this.refresh();
-    this.startTimer(this.opts.voteMs ?? 40_000, () => this.resolveVote());
   }
 
   private vote(p: GamePlayer, n: number) {
@@ -556,6 +677,7 @@ export class Game {
     const len = Math.max(2, length - (this.boons.has('core') ? 1 : 0));
     const sequence = this.rng.shuffle(GLYPHS).slice(0, len);
     this.phase = 'puzzle';
+    this.shownGlyph = -1;
     this.puzzle = { sequence, progress: 0, misses: 0, success, failure };
     for (const p of this.players.values()) {
       if (this.has(p.id, 'mage')) p.feed({ kind: 'tip', text: `Only you can read the lock: ${sequence.map((g) => `${GLYPH_CHAR[g]} ${g}`).join(' → ')}. Show your Rogue, one glyph at a time.` });
@@ -572,6 +694,7 @@ export class Game {
     if (g === pz.sequence[pz.progress]) {
       pz.progress++;
       this.emit({ kind: 'glyph', ok: true, glyph: g });
+      this.award(p.id, WARDEN.glyph, 'right glyph', 'glyphs');
       if (pz.progress >= pz.sequence.length) {
         this.notice('The lock opens with a sound like a held breath let go.', 'good');
         return this.enterNode(pz.success);
@@ -579,7 +702,10 @@ export class Game {
     } else {
       pz.misses++;
       pz.progress = 0;
+      this.shownGlyph = -1;
+      this.glyphMisses++;
       this.emit({ kind: 'glyph', ok: false, glyph: g });
+      this.award(p.id, WARDEN.badGlyph, 'wrong glyph');
       this.notice(`Wrong glyph. The lock resets. (${NUM.maxMisses - pz.misses} tries left)`, 'bad');
       this.addMeter(NUM.glyphMissCost);
       if (this.meter >= 100) return this.lose();
@@ -592,6 +718,11 @@ export class Game {
     if (!this.has(p.id, 'mage')) return p.feed({ kind: 'tip', text: 'Only the Mage can read the glyphs.' });
     const g = GLYPHS.find((x) => x === name?.toLowerCase());
     if (!g) return;
+    const pz = this.puzzle;
+    if (pz && g === pz.sequence[pz.progress] && this.shownGlyph < pz.progress) {
+      this.shownGlyph = pz.progress;
+      this.award(p.id, WARDEN.showGlyph, 'clear signal', undefined, true);
+    }
     this.chat(p, `${GLYPH_CHAR[g]} ${g.toUpperCase()}`);
   }
 
@@ -634,6 +765,10 @@ export class Game {
     pl.reply = verdict.reply;
     pl.linesLeft--;
     pl.progress += verdict.score > 0 ? Math.min(8, verdict.score) : -3;
+    if (verdict.score > 0) {
+      this.award(p.id, Math.min(8, verdict.score) * WARDEN.persuasion, 'well said');
+      this.statsOf(p.id).persuasion += Math.min(8, verdict.score);
+    } else if (verdict.score < 0) this.award(p.id, -5, 'that went badly');
     this.say(pl.ctx.name, verdict.reply, { type: 'npc', id: pl.npc });
     if (verdict.score < 0) this.addMeter(4);
     if (this.meter >= 100) return this.lose();
@@ -650,7 +785,8 @@ export class Game {
 
   // ---------------------------------------------------------------- fights
 
-  private pickIntent(spec: FoeSpec, prev?: IntentSpec): IntentSpec {
+  private pickIntent(spec: FoeSpec, prev?: IntentSpec, round = 1): IntentSpec {
+    if (spec.script) return spec.script[(round - 1) % spec.script.length]!;
     // weighted random, but never the same charge or shell twice in a row
     const pool = spec.moves.filter((m) => !(prev && prev.kind === m.kind && (m.kind === 'charge' || m.kind === 'shell')));
     const total = pool.reduce((s, m) => s + m.weight, 0);
@@ -677,8 +813,12 @@ export class Game {
     this.called = undefined;
     this.bossParley = [];
     this.bossTalk = {};
+    this.lastFoeMove = undefined;
     this.say('', spec.intro, { type: 'narrator' });
-    if (this.chapter <= 2 && !boss) this.feedAll({ kind: 'tip', text: 'Only the Mage can see what it will do next. Mage: call it out. Everyone: pick a move.' });
+    if (this.chapter <= 2 && !boss && !this.story.practice) {
+      const secs = Math.round((this.opts.roundMs ?? NUM.roundMs) / 1000);
+      this.feedAll({ kind: 'tip', text: `Only the Mage can see what it will do next: call it out. Everyone picks a move before the ${secs}s timer runs out, or the crew is caught flat-footed.` });
+    }
     if (boss) this.feedAll({ kind: 'tip', text: `It ${this.breed.temperament}. Anyone can speak to it instead of using a move.` });
     this.announceRound();
   }
@@ -689,8 +829,26 @@ export class Game {
     for (const p of this.players.values()) {
       if (this.has(p.id, 'mage')) p.send(c.cyan(`   you see its next move: ${intentOf(f.intent).label} (${intentOf(f.intent).hint})`));
     }
+    if (this.story.practice) this.coach(f);
+    const ms = this.story.practice ? 0 : (this.opts.roundMs ?? (f.boss ? NUM.bossRoundMs : NUM.roundMs));
+    this.startTimer(ms, () => this.forceResolve());
+    this.roundStarted = Date.now();
+    this.firstCall = undefined;
     this.refresh();
-    this.startTimer(this.opts.roundMs ?? 45_000, () => this.forceResolve());
+  }
+
+  /** Tutorial: say exactly which keys answer what the construct is about to do. */
+  private coach(f: FoeState) {
+    const tips: Record<string, string> = {
+      attack: 'Its badge says ATTACK. Cleric: press D to Ward and block it. Rogue: press A to Strike. Mage: press W to Bolt (or Q to Hex).',
+      charge: 'It is CHARGING a huge hit for next round. Mage: press Q to Hex: it breaks the charge, and makes this round’s Strike (A) hit double. Cleric: keep your Ward, press F to Mend.',
+      heavy: 'The big hit is coming NOW. Cleric: press D to Ward it.',
+      shell: 'It raises a SHELL: Strikes and Fury do half. Mage: press W, Bolt pierces shells. Cleric: F to Mend.',
+      wail: 'It will WAIL: no Ward can stop it. Cleric: press F to Mend. Rogue and Mage: hit it while you can (A, W).',
+    };
+    const tip = tips[f.intent.kind];
+    const calls = this.round === 1 ? ' As the Mage you can also press 1-5 to call out what it will do; in a real crew that is how everyone else finds out.' : '';
+    if (tip) this.feedAll({ kind: 'tip', text: tip + calls });
   }
 
   private isReady(id: string) {
@@ -703,6 +861,7 @@ export class Game {
     const label = key ? CALLS[key] : undefined;
     if (!label) return p.send(c.dim(`call ${Object.keys(CALLS).join(' | ')}`));
     this.called = { by: p.handle, label };
+    this.firstCall ??= key;
     this.chat(p, `📣 ${label}`);
     this.refresh();
   }
@@ -718,7 +877,7 @@ export class Game {
     }
     used.add(cls);
     this.acted.set(p.id, used);
-    this.queued.push({ player: p.id, cls, move });
+    this.queued.push({ player: p.id, cls, move, at: Date.now() });
     this.log(c.dim(`   ${p.handle} readies ${MOVES[move].label}`));
     this.refresh();
     this.checkReady();
@@ -747,7 +906,7 @@ export class Game {
     if (this.phase !== 'boss') return;
     this.bossParley = [...this.bossParley, { from: 'crew' as const, text: message }, { from: 'wyrm' as const, text: verdict.reply }].slice(-10);
     const amount = Math.min(NUM.speechCap, Math.round(Math.max(0, verdict.score) * 1.5));
-    this.queued.push({ player: p.id, cls, move: 'speak', amount: verdict.score < 0 ? -1 : amount });
+    this.queued.push({ player: p.id, cls, move: 'speak', amount: verdict.score < 0 ? -1 : amount, at: Date.now() });
     this.bossTalk = { said: message, saidBy: p.handle, reply: verdict.reply };
     this.say(this.wyrmName, verdict.reply, { type: 'npc', id: 'wyrm' });
     this.refresh();
@@ -762,7 +921,6 @@ export class Game {
 
   private forceResolve() {
     if (this.phase !== 'combat' && this.phase !== 'boss') return;
-    this.notice('Time! Anyone undecided holds back this round.');
     if (this.pendingSpeech > 0) this.resolveWhenSpoken = true;
     else this.resolve();
   }
@@ -778,14 +936,38 @@ export class Game {
     let warded = false;
     let hexed = false;
 
-    const hit = (who: string, cls: ClassId, move: Move, base: number, opts: { doubles?: boolean; pierces?: boolean } = {}) => {
+    // Anyone still undecided at the buzzer leaves the crew open.
+    const idle = [...this.players.keys()].filter((id) => !this.isReady(id));
+    if (idle.length) {
+      for (const id of idle) this.award(id, WARDEN.flatFooted, 'caught flat-footed', 'idle');
+      const extra = NUM.flatFooted * idle.length;
+      this.meter = Math.min(100, this.meter + extra);
+      this.emit({ kind: 'hurt', amount: extra });
+      this.notice(`Time! ${idle.map(handle).join(' and ')} ${idle.length > 1 ? 'were' : 'was'} caught flat-footed: +${extra} ${this.story.meterName}, and its hit lands harder.`, 'bad');
+      if (this.meter >= 100) return this.lose();
+    }
+
+    // The Warden scores each move against what the monster was really doing.
+    const intent = f.intent.kind;
+    const timed = this.timerTotal > 0;
+    const quickBy = this.roundStarted + this.timerTotal * WARDEN.quickShare;
+    for (const q of queue) {
+      if (timed && q.at <= quickBy && q.move !== 'speak') this.award(q.player, WARDEN.quick, 'quick', undefined, true);
+    }
+    const mageId = [...this.players.keys()].find((id) => this.has(id, 'mage'));
+    if (mageId && this.firstCall && (this.firstCall === intent || (this.firstCall === 'attack' && intent === 'heavy'))) this.award(mageId, WARDEN.goodCall, 'called it', 'goodCalls');
+
+    const hit = (q: Queued, who: string, move: Move, base: number, opts: { doubles?: boolean; pierces?: boolean } = {}) => {
       let dmg = base;
-      const doubled = opts.doubles && f.exposed;
+      const doubled = !!opts.doubles && f.exposed;
+      const blunt = shelled && !opts.pierces;
       if (doubled) dmg *= NUM.exposedMult;
-      if (shelled && !opts.pierces) dmg = Math.ceil(dmg * NUM.shellMult);
+      if (blunt) dmg = Math.ceil(dmg * NUM.shellMult);
       f.hp = Math.max(0, f.hp - dmg);
-      this.emit({ kind: 'act', by: who, cls, move, amount: dmg });
-      this.log(`   ${c.green(`${who} · ${MOVES[move].label}: ${dmg}`)}${doubled ? c.cyan(' ×2') : ''}${shelled && !opts.pierces ? c.dim(' (shell ½)') : ''} ${c.dim(`→ ${f.hp}/${f.maxHp}`)}`);
+      this.emit({ kind: 'act', by: who, cls: q.cls, move, amount: dmg });
+      this.log(`   ${c.green(`${who} · ${MOVES[move].label}: ${dmg}`)}${doubled ? c.cyan(' ×2') : ''}${blunt ? c.dim(' (shell ½)') : ''} ${c.dim(`→ ${f.hp}/${f.maxHp}`)}`);
+      if (f.hp <= 0) this.award(q.player, WARDEN.killingBlow, 'killing blow', undefined, true);
+      return { doubled, blunt };
     };
 
     for (const q of queue) {
@@ -794,36 +976,56 @@ export class Game {
         case 'ward':
           warded = true;
           this.emit({ kind: 'act', by: who, cls: q.cls, move: 'ward' });
+          if (intent === 'attack' || intent === 'heavy') this.award(q.player, WARDEN.cleanWard, 'clean ward', 'cleanWards');
+          else this.award(q.player, WARDEN.wastedWard, 'wasted ward');
           break;
         case 'mend': {
           const amount = Math.min(this.meter, NUM.mend + (this.boons.has('blessing') ? 4 : 0));
           this.meter -= amount;
           this.emit({ kind: 'act', by: who, cls: q.cls, move: 'mend', amount });
           if (amount) this.log(c.yellow(`   ${who} · Mend: −${amount} → ${this.meter}%`));
+          if (amount && (intent === 'wail' || this.lastFoeMove === 'wail')) this.award(q.player, WARDEN.timelyMend, 'timely mend');
+          else if (amount) this.award(q.player, WARDEN.mend, 'mend');
           break;
         }
         case 'hex':
           hexed = true;
           f.exposed = true;
-          hit(who, q.cls, 'hex', NUM.hex);
+          hit(q, who, 'hex', NUM.hex);
+          if (intent === 'charge') this.award(q.player, WARDEN.brokeCharge, 'broke the charge', 'brokenCharges');
+          else this.award(q.player, WARDEN.setUpHex, 'set up');
           break;
         case 'bolt':
-          hit(who, q.cls, 'bolt', NUM.bolt + (this.boons.has('weapons') ? 4 : 0), { pierces: true });
+          hit(q, who, 'bolt', NUM.bolt + (this.boons.has('weapons') ? 4 : 0), { pierces: true });
+          if (shelled) this.award(q.player, WARDEN.pierce, 'pierced the shell', 'pierced');
+          else this.award(q.player, WARDEN.strike, 'bolt');
           break;
         case 'speak':
           if ((q.amount ?? 0) < 0) {
             f.enraged += NUM.enrage;
             this.emit({ kind: 'act', by: who, cls: q.cls, move: 'speak', amount: 0 });
             this.notice(`${who}'s words enrage it: its next attack hits harder.`, 'bad');
-          } else if (q.amount) hit(who, q.cls, 'speak', q.amount, { pierces: true });
+            this.award(q.player, -5, 'enraged it');
+          } else if (q.amount) {
+            hit(q, who, 'speak', q.amount, { pierces: true });
+            this.award(q.player, q.amount, 'words that wound');
+          }
           break;
-        case 'strike':
-          hit(who, q.cls, 'strike', NUM.strike + (this.boons.has('ally') ? 3 : 0), { doubles: true });
+        case 'strike': {
+          const r = hit(q, who, 'strike', NUM.strike + (this.boons.has('ally') ? 3 : 0), { doubles: true });
+          if (r.blunt) this.award(q.player, WARDEN.bluntStrike, 'blunted');
+          else if (r.doubled) this.award(q.player, WARDEN.double, 'double strike', 'doubles');
+          else this.award(q.player, WARDEN.strike, 'strike');
           break;
-        case 'fury':
-          hit(who, q.cls, 'fury', NUM.fury, { doubles: true });
+        }
+        case 'fury': {
+          const r = hit(q, who, 'fury', NUM.fury, { doubles: true });
           this.meter = Math.min(100, this.meter + NUM.furyCost);
+          if (r.blunt) this.award(q.player, WARDEN.bluntStrike, 'fury into a shell');
+          else if (r.doubled) this.award(q.player, WARDEN.doubleFury, 'double fury', 'doubles');
+          else this.award(q.player, WARDEN.fury, 'fury');
           break;
+        }
       }
       if (f.hp <= 0) return this.winFight();
     }
@@ -837,6 +1039,8 @@ export class Game {
     const it = f.intent;
     let mult = f.dmgMult;
     if (this.round === 1 && this.boons.has('disguise')) mult *= 0.5;
+    if (idle.length) mult *= NUM.flatFootedMult;
+    this.lastFoeMove = it.kind;
     const amount = Math.round((it.amount + f.enraged) * mult);
     switch (it.kind) {
       case 'attack':
@@ -877,7 +1081,7 @@ export class Game {
     if (f.pendingHeavy) {
       f.intent = f.pendingHeavy;
       f.pendingHeavy = undefined;
-    } else f.intent = this.pickIntent(f.spec, prev);
+    } else f.intent = this.pickIntent(f.spec, prev, this.round + 1);
     f.exposed = f.boss && this.boons.has('oracle') && this.round < 2;
     this.round++;
     this.queued = [];
@@ -891,6 +1095,7 @@ export class Game {
     this.clearTimer();
     this.emit({ kind: 'slay', boss: f.boss });
     this.notice(`${f.name} is destroyed.`, 'good');
+    for (const id of this.players.keys()) this.award(id, WARDEN.slay + (f.boss ? WARDEN.slay : 0), f.boss ? 'the wyrm falls' : 'monster down', undefined, true);
     if (f.win) this.apply(f.win);
     this.foe = undefined;
     this.enterNode(f.next);
@@ -920,12 +1125,17 @@ export class Game {
 
   private startTimer(ms: number, fn: () => void) {
     this.clearTimer();
-    if (ms > 0) this.timer = setTimeout(fn, ms);
+    if (ms > 0) {
+      this.timer = setTimeout(fn, ms);
+      this.deadline = Date.now() + ms;
+      this.timerTotal = ms;
+    }
   }
 
   private clearTimer() {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+    this.timerTotal = 0;
   }
 
   private end(win: boolean, title: string, ending: string) {
@@ -937,9 +1147,11 @@ export class Game {
     this.emit({ kind: 'end', win });
     this.say('', ending, { type: 'narrator' });
     this.log(win ? c.green(c.bold(`█ ${title.toUpperCase()} █`)) : c.red(c.bold(`█ ${title.toUpperCase()} █`)));
+    for (const p of this.players.values()) p.checkpoint?.(null);
     this.refresh();
     const seconds = Math.round((Date.now() - this.startedAt) / 1000);
-    this.opts.onEnd({ win, title, meter: this.meter, seconds });
+    const r = this.result('');
+    this.opts.onEnd({ win, title, meter: this.meter, seconds, stars: r.stars, team: r.team });
   }
 
   dispose() {

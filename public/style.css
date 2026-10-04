@@ -429,3 +429,286 @@ body.log-open #terminal { display: block; flex: 0 0 22vh; min-height: 120px; }
   .chats { top: 44px; max-width: 80%; }
   body.log-open #terminal { flex-basis: 18dvh; }
 }
+
+/* ------------------------------------------------------------ keycaps on every action */
+
+.act kbd {
+  align-self: flex-start;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 5px;
+  margin-bottom: 2px;
+  color: #07060d;
+  background: currentColor;
+  border-radius: 3px;
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.5);
+}
+.act kbd { color: inherit; background: rgba(215, 227, 255, 0.12); border: 1px solid currentColor; }
+.act.pressed { transform: translateY(2px) scale(0.97); box-shadow: 0 0 18px currentColor; }
+#cmdbar input::placeholder { color: var(--muted); }
+
+/* call-outs are one tap each: the label says enough (the full line is in the tooltip) */
+.act-group[data-group^="call out"] small { display: none; }
+.act-group[data-group^="call out"] .act { padding: 4px 10px; }
+.act-group[data-group^="call out"] .act-row { flex-wrap: nowrap; }
+.act { gap: 1px; padding: 5px 10px; }
+.act small { max-width: 210px; }
+@media (pointer: fine) {
+  .stage { min-height: 340px; }
+  #actions { gap: 4px 6px; margin-bottom: 6px; }
+}
+
+/* ------------------------------------------------------------ fights: keep the console clear of the crew at the bottom */
+
+.stage.fight .dialogue { left: 12px; right: auto; top: 50px; bottom: auto; max-width: min(380px, 31%); }
+.stage.fight .dialogue .portrait { width: 40px; height: 40px; }
+.stage.fight .chats { top: auto; bottom: 34%; max-width: min(300px, 30%); }
+.stage.fight .tip, .stage.fight .dialogue.show ~ .tip { left: auto; right: 12px; top: 50px; bottom: auto; transform: none; max-width: min(360px, 31%); text-align: left; }
+.stage.fight .tip.show { transform: none; }
+.stage.fight .toasts { left: auto; right: 12px; top: auto; bottom: 34%; transform: none; align-items: flex-end; max-width: 31%; }
+
+/* ------------------------------------------------------------ main menu */
+
+#menu {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow-y: auto;
+  background: radial-gradient(ellipse at center, rgba(7, 6, 13, 0.55), rgba(7, 6, 13, 0.92));
+  backdrop-filter: blur(2px);
+}
+#menu[hidden], #results[hidden] { display: none; }
+.menu-card {
+  width: min(560px, 100%);
+  padding: 22px 24px;
+  background: linear-gradient(180deg, rgba(20, 12, 36, 0.95), rgba(8, 6, 16, 0.97));
+  border: 1px solid rgba(255, 184, 0, 0.45);
+  border-radius: 10px;
+  box-shadow: 0 0 60px rgba(255, 43, 214, 0.18), 0 0 20px rgba(255, 184, 0, 0.1);
+}
+.menu-card h1 {
+  margin: 0;
+  font-size: clamp(28px, 6vw, 44px);
+  letter-spacing: 0.3em;
+  color: #ffe9a8;
+  text-shadow: 0 0 18px rgba(255, 184, 0, 0.8), 0 0 2px #fff;
+  text-align: center;
+}
+.menu-card .tagline { text-align: center; color: var(--muted); font-size: 12px; margin: 6px 0 18px; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.field input {
+  font: inherit;
+  font-size: 18px;
+  letter-spacing: 0.05em;
+  text-transform: none;
+  color: var(--cyan);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 240, 255, 0.45);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.field input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 12px rgba(0, 240, 255, 0.35); }
+.name-error { display: none; color: #ff6b88; font-size: 12px; margin: 6px 0 0; }
+.name-error.show { display: block; }
+.menu-buttons { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.menu-buttons button, .menu-row button, #results button {
+  font: inherit;
+  font-size: 13px;
+  color: #d7e3ff;
+  background: rgba(13, 11, 24, 0.9);
+  border: 1px solid rgba(215, 227, 255, 0.25);
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.08s, border-color 0.15s, box-shadow 0.15s;
+}
+.menu-buttons button:hover, .menu-row button:hover, #results button:hover { border-color: #ffb800; box-shadow: 0 0 14px rgba(255, 184, 0, 0.3); transform: translateY(-1px); }
+button.big { font-size: 15px; padding: 10px 14px; display: grid; grid-template-columns: 26px 1fr; align-items: center; column-gap: 8px; }
+button.big > span { grid-row: span 2; font-size: 18px; text-align: center; color: #ffb800; }
+button.big small { grid-column: 2; font-size: 11px; color: var(--muted); }
+button.big em { font-style: normal; font-size: 10px; color: #07060d; background: #ffb800; border-radius: 3px; padding: 1px 5px; margin-left: 6px; }
+button.big.go { border-color: rgba(57, 255, 136, 0.6); color: #39ff88; }
+button.big.hot { border-color: rgba(255, 184, 0, 0.6); }
+.menu-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.menu-row button { text-align: center; font-size: 12px; }
+.menu-card table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+.menu-card td { padding: 5px 6px; border-bottom: 1px solid rgba(215, 227, 255, 0.08); vertical-align: top; }
+.menu-card kbd { font: inherit; font-weight: 700; color: var(--cyan); white-space: nowrap; }
+.menu-card .muted, #results .muted { color: var(--muted); font-size: 12px; line-height: 1.5; }
+td.win { color: #39ff88; }
+td.lose { color: #ff6b88; }
+td.num { text-align: right; color: #ffe9a8; }
+.stars-sm { color: #ffb800; letter-spacing: 2px; }
+.achievements { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; max-height: 50vh; overflow-y: auto; }
+.ach { display: flex; flex-direction: column; gap: 2px; padding: 8px; border: 1px dashed rgba(215, 227, 255, 0.15); border-radius: 6px; color: var(--muted); filter: grayscale(1); opacity: 0.6; }
+.ach .icon { font-size: 20px; }
+.ach b { font-size: 12px; }
+.ach small { font-size: 10px; line-height: 1.3; }
+.ach.on { color: #ffe9a8; border: 1px solid rgba(255, 184, 0, 0.6); filter: none; opacity: 1; box-shadow: 0 0 10px rgba(255, 184, 0, 0.15); }
+
+/* ------------------------------------------------------------ results */
+
+#results { position: fixed; inset: 0; z-index: 35; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(5, 4, 10, 0.72); overflow-y: auto; }
+#results .panel { width: min(620px, 100%); padding: 20px 22px; text-align: center; background: linear-gradient(180deg, rgba(20, 12, 36, 0.96), rgba(8, 6, 16, 0.98)); border: 1px solid rgba(255, 184, 0, 0.5); border-radius: 10px; animation: rise 0.5s ease; }
+#results h2 { margin: 0; font-size: 26px; letter-spacing: 0.12em; text-transform: uppercase; }
+#results h2.win { color: #ffe9a8; text-shadow: 0 0 16px rgba(255, 184, 0, 0.7); }
+#results h2.lose { color: #ff6b88; text-shadow: 0 0 16px rgba(255, 56, 96, 0.6); }
+#results .stars { font-size: 44px; margin: 8px 0; letter-spacing: 8px; }
+#results .star { display: inline-block; color: rgba(215, 227, 255, 0.15); }
+#results .star.on { color: #ffb800; text-shadow: 0 0 18px #ffb800; animation: pop 0.45s ease both; }
+#results .totals { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px 20px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+#results .totals b { color: #ffe9a8; font-size: 16px; margin-left: 4px; }
+#results table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
+#results td { padding: 5px 6px; border-bottom: 1px solid rgba(215, 227, 255, 0.08); }
+#results tr.you td { color: var(--cyan); }
+#results td.feats { color: var(--muted); font-size: 11px; }
+#results .unlocked { margin-top: 12px; }
+#results .unlocked h3 { font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase; color: #ffb800; margin: 0 0 6px; }
+#results .unlocked .ach { display: inline-block; margin: 3px; padding: 4px 8px; animation: pop 0.5s 1.2s ease both; }
+#results button { margin-top: 12px; text-align: center; }
+#results button kbd, button.big kbd { font: inherit; font-size: 10px; color: var(--muted); border: 1px solid; border-radius: 3px; padding: 0 4px; margin-right: 6px; }
+@keyframes pop { 0% { transform: scale(0.2); opacity: 0; } 70% { transform: scale(1.25); opacity: 1; } 100% { transform: scale(1); } }
+@keyframes rise { from { transform: translateY(14px); opacity: 0; } to { transform: none; opacity: 1; } }
+#hud .pts { color: #ffe9a8; font-weight: 700; }
+#hud .pts::before { content: '✦'; margin-right: 2px; color: #ffb800; font-size: 9px; }
+
+/* ------------------------------------------------------------ phones: landscape only */
+
+#rotate { display: none; }
+@media (pointer: coarse) and (orientation: portrait) {
+  #rotate {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    background: #07060d;
+    color: #ffe9a8;
+  }
+  #rotate > div { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+  #rotate .phone { font-size: 54px; animation: turn 2.2s ease-in-out infinite; }
+  #rotate small { color: var(--muted); }
+}
+@keyframes turn { 0%, 30% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
+
+/* drawer: the log and a small keyboard, slid in from the right */
+#drawer { display: none; }
+body.touch #drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: min(420px, 62vw);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 8px 8px;
+  background: rgba(8, 6, 16, 0.97);
+  border-left: 1px solid rgba(0, 240, 255, 0.4);
+  box-shadow: -10px 0 40px rgba(0, 0, 0, 0.6);
+  transform: translateX(105%);
+  transition: transform 0.25s ease;
+}
+body.touch #drawer.open { transform: none; }
+.drawer-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--cyan); }
+.drawer-head button { font: inherit; color: var(--muted); background: none; border: 1px solid rgba(215, 227, 255, 0.2); border-radius: 4px; padding: 2px 10px; }
+#drawer-log { flex: 1; min-height: 60px; overflow: hidden; }
+body.touch #drawer-log #terminal { display: block; height: 100%; min-height: 0; padding: 4px; }
+body.touch #drawer #cmdbar { display: flex; margin: 0; }
+body.touch #drawer #cmdbar input { font-size: 13px; padding: 6px 8px; }
+body.touch .rig > #terminal, body.touch .rig > #cmdbar { display: none; }
+.minikeys { display: flex; flex-direction: column; gap: 4px; user-select: none; -webkit-user-select: none; touch-action: manipulation; }
+.minikeys .row, .minikeys .chips { display: flex; gap: 3px; justify-content: center; }
+.minikeys .key { flex: 1; min-width: 0; height: 30px; font: inherit; font-size: 13px; color: #d7e3ff; background: rgba(215, 227, 255, 0.08); border: 1px solid rgba(215, 227, 255, 0.15); border-radius: 4px; padding: 0; }
+.minikeys .key.wide { flex: 1.6; font-size: 11px; }
+.minikeys .key.space { flex: 4; }
+.minikeys .key.go { color: #07060d; background: var(--cyan); }
+.minikeys .key.on { color: var(--cyan); border-color: var(--cyan); }
+.minikeys .key.chip { height: 24px; font-size: 11px; color: #ff9cf0; border-color: rgba(255, 43, 214, 0.4); }
+.minikeys .key.down { background: rgba(0, 240, 255, 0.35); }
+
+/* the phone layout: the game on the left, a pad of keys on the right */
+@media (pointer: coarse) and (orientation: landscape) {
+  .rig {
+    max-width: none;
+    height: 100dvh;
+    padding: max(6px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(190px, 32%);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    column-gap: 8px;
+  }
+  header { grid-column: 1 / -1; padding-bottom: 4px; }
+  header .hint { display: none; }
+  .logo { font-size: 13px; }
+  #hud { grid-column: 1 / -1; font-size: 10px; padding: 3px 6px; margin-bottom: 4px; min-height: 0; }
+  #hud .row { gap: 2px 6px; }
+  #hud .row + .row { margin-top: 2px; }
+  #hud .wide-only { display: none; }
+  #hud .bar { width: 60px; }
+  .stage { grid-column: 1; grid-row: 3; min-height: 0; margin: 0; }
+  #actions {
+    grid-column: 2;
+    grid-row: 3;
+    margin: 0;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-content: stretch;
+    overflow-y: auto;
+    overflow-x: hidden;
+    gap: 6px;
+    min-height: 0;
+  }
+  .act-group { border-right: none; padding: 0; margin: 0; }
+  .act-row { flex-wrap: wrap; gap: 5px; }
+  .act { max-width: none; flex: 1 1 45%; min-height: 40px; font-size: 12px; padding: 5px 8px; }
+  .act small { font-size: 9px; }
+  /* fight moves become big round pad keys, like a controller */
+  #actions.fighting .act.move {
+    flex: 0 0 auto;
+    width: 56px;
+    height: 56px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 50%;
+    border-width: 2px;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.45), 0 0 10px rgba(0, 0, 0, 0.4);
+  }
+  #actions.fighting .act.move kbd { align-self: center; font-size: 18px; padding: 0; margin: 0; border: none; background: none; }
+  #actions.fighting .act.move b { font-size: 9px; }
+  #actions.fighting .act.move small { display: none; }
+  #actions.fighting .act-group:not([data-group^="call out"]) .act-row { justify-content: center; gap: 10px; }
+  #actions.fighting .act-group[data-group^="call out"] .act-row { flex-wrap: wrap; }
+  #actions.fighting .act-group[data-group^="call out"] .act { flex: 1 1 28%; min-height: 0; padding: 3px 4px; align-items: center; }
+  #actions.fighting .act-group[data-group^="call out"] .act b { font-size: 9px; }
+  #actions.fighting .act-group[data-group^="call out"] small { display: none; }
+  .dialogue { left: 8px; right: 8px; bottom: 8px; padding: 6px 10px; }
+  .dialogue .portrait { width: 34px; height: 34px; }
+  .dialogue .line { font-size: 11px; min-height: 2.4em; }
+  .stage.fight .dialogue { max-width: 40%; top: 44px; }
+  .stage.fight .tip, .stage.fight .dialogue.show ~ .tip { top: auto; bottom: 8px; max-width: 34%; font-size: 10px; }
+  .stage.fight .toasts { top: 40px; bottom: auto; max-width: 34%; }
+  .tip { font-size: 10px; padding: 4px 8px; }
+  .toasts { top: 6px; }
+  .toast, .chat span { font-size: 10px; }
+  .chats { top: 40px; max-width: 45%; }
+  .menu-card { padding: 12px 16px; }
+  .menu-card h1 { font-size: 24px; }
+  .menu-card .tagline { margin: 2px 0 8px; }
+  .menu-buttons { margin-top: 8px; gap: 5px; }
+  button.big { padding: 6px 10px; font-size: 13px; }
+  #results .stars { font-size: 30px; }
+}

@@ -1,10 +1,10 @@
 import { randomInt } from 'node:crypto';
-import type { ActionButton, FeedItem, Fx, HudState, ModeId, SceneState } from '../shared/protocol.js';
+import type { ActionButton, Checkpoint, FeedItem, Fx, HudState, ModeId, SceneState } from '../shared/protocol.js';
 import { c } from './ansi.js';
 import { Game, type GamePlayer } from './game/game.js';
 import type { Narrator } from './game/narrator.js';
 import type { ParleyJudge } from './game/parley.js';
-import { STORIES } from './game/story.js';
+import { CREW_STORIES, STORIES } from './game/story.js';
 
 /** A connected client, independent of transport. */
 export interface Session {
@@ -15,6 +15,7 @@ export interface Session {
   scene(scene: SceneState, actions: ActionButton[]): void;
   feed(item: FeedItem): void;
   fx(fx: Fx): void;
+  checkpoint(cp: Checkpoint | null): void;
   clear(): void;
   close(): void;
 }
@@ -50,6 +51,9 @@ class Player implements GamePlayer {
   fx(fx: Fx) {
     this.session.fx(fx);
   }
+  checkpoint(cp: Checkpoint | null) {
+    this.session.checkpoint(cp);
+  }
   get member() {
     return { handle: this.handle, avatar: this.avatar, classes: [] };
   }
@@ -61,12 +65,16 @@ interface Room {
   players: Player[];
   story: ModeId;
   game?: Game;
+  /** A saved chapter the next story starts from. */
+  checkpoint?: Checkpoint;
+  /** The solo tutorial: nobody else can join. */
+  practice?: boolean;
 }
 
 export const MAX_PLAYERS = 4;
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const HANDLE_RE = /^[A-Za-z0-9_-]{2,16}$/;
-const MODES = Object.keys(STORIES) as ModeId[];
+const MODES = CREW_STORIES;
 
 export interface HubOptions {
   judge: ParleyJudge;
@@ -74,6 +82,8 @@ export interface HubOptions {
   minPlayers?: number;
   roundMs?: number;
   voteMs?: number;
+  /** How long the ending stays up before the crew is back in the safehouse. */
+  returnMs?: number;
 }
 
 export class Hub {
@@ -82,8 +92,9 @@ export class Hub {
 
   constructor(private readonly opts: HubOptions) {}
 
+  /** Real stories need a crew of at least two; only the tutorial is solo. */
   get minPlayers() {
-    return this.opts.minPlayers ?? 2;
+    return Math.max(1, this.opts.minPlayers ?? 2);
   }
 
   connect(session: Session) {
@@ -145,6 +156,7 @@ export class Hub {
         code: room.code,
         story: room.story,
         party: room.players.map((r) => ({ handle: r.handle, avatar: r.avatar, classes: [], you: r === q, host: r === room.host })),
+        ...(room.checkpoint ? { resume: { chapter: room.checkpoint.chapter, title: room.checkpoint.title } } : {}),
       });
     }
   }
@@ -157,6 +169,9 @@ export class Hub {
         return this.joinRoom(p, (rest[0] ?? '').toUpperCase());
       case 'reroll':
         return this.reroll(p);
+      case 'tutorial':
+      case 'train':
+        return this.startTutorial(p);
       default:
         return p.feed({ kind: 'tip', text: 'Create a safehouse, or join one with its 4-letter code.' });
     }
@@ -182,6 +197,7 @@ export class Hub {
     const no = (text: string) => p.feed({ kind: 'notice', text, tone: 'bad' });
     if (!code) return p.feed({ kind: 'tip', text: 'Type join and the 4-letter code.' });
     if (!room) return no(`No safehouse called ${code}.`);
+    if (room.practice) return no(`No safehouse called ${code}.`);
     if (room.game) return no(`${code} is mid-story. Wait for them to finish.`);
     if (room.players.length >= MAX_PLAYERS) return no(`${code} is full.`);
     if (room.players.some((q) => q.handle.toLowerCase() === p.handle.toLowerCase())) return no(`Someone in ${code} already goes by ${p.handle}.`);
@@ -229,17 +245,46 @@ export class Hub {
     const m = MODES.find((x) => x === mode);
     if (!m) return p.feed({ kind: 'tip', text: `Stories: ${MODES.join(', ')}` });
     room.story = m;
+    room.checkpoint = undefined;
     this.toRoom(room, { kind: 'notice', text: `Story: ${STORIES[m].title} — ${STORIES[m].pitch}`, tone: 'info' });
     this.pushSafehouseHud(room);
+  }
+
+  /** Start a story from a saved chapter: opens a safehouse the crew can join. */
+  resume(sessionId: string, cp: unknown) {
+    const p = this.players.get(sessionId);
+    if (!p || p.state !== 'lobby') return p?.feed({ kind: 'tip', text: 'Leave your current safehouse first.' });
+    if (!Game.validCheckpoint(cp)) return p.feed({ kind: 'notice', text: 'That save could not be read. Start a new story instead.', tone: 'bad' });
+    const room: Room = { code: this.newCode(), host: p, players: [], story: cp.story, checkpoint: cp };
+    this.rooms.set(room.code, room);
+    this.enterRoom(p, room);
+    const others = cp.crew.filter((h) => h.toLowerCase() !== p.handle.toLowerCase());
+    p.feed({ kind: 'tip', text: `Resuming ${STORIES[cp.story].title} at chapter ${cp.chapter}. Your safehouse code is ${room.code}${others.length ? `: send it to ${others.join(', ')}` : ''}, then begin.` });
+  }
+
+  private startTutorial(p: Player) {
+    const room: Room = { code: this.newCode(), host: p, players: [], story: 'tutorial', practice: true };
+    this.rooms.set(room.code, room);
+    room.players.push(p);
+    p.room = room;
+    p.state = 'room';
+    this.launch(room);
   }
 
   private startGame(p: Player, room: Room) {
     if (room.host !== p) return p.feed({ kind: 'tip', text: `Only the host (${room.host.handle}) can begin.` });
     if (room.players.length < this.minPlayers) return p.feed({ kind: 'tip', text: `You need at least ${this.minPlayers} players. Share the code: ${room.code}` });
+    this.launch(room);
+  }
+
+  private launch(room: Room) {
+    const checkpoint = room.checkpoint;
+    room.checkpoint = undefined;
     room.game = new Game(room.players, {
       judge: this.opts.judge,
       story: room.story,
       code: room.code,
+      ...(checkpoint ? { checkpoint } : {}),
       ...(this.opts.narrator ? { narrator: this.opts.narrator } : {}),
       ...(this.opts.roundMs !== undefined ? { roundMs: this.opts.roundMs } : {}),
       ...(this.opts.voteMs !== undefined ? { voteMs: this.opts.voteMs } : {}),
@@ -248,9 +293,13 @@ export class Hub {
         for (const q of room.players) q.setPrompt(`${c.magenta(q.handle)}@${c.yellow(room.code)}> `);
         setTimeout(() => {
           if (room.game) return;
+          if (room.practice) {
+            for (const q of [...room.players]) this.leaveRoom(q);
+            return;
+          }
           this.toRoom(room, { kind: 'tip', text: `Back in the safehouse. ${room.host.handle} can begin another story.` });
           this.pushSafehouseHud(room);
-        }, 9000);
+        }, this.opts.returnMs ?? 12_000);
       },
     });
   }

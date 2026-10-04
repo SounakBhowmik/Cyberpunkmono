@@ -1,35 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ActionButton, FeedItem, Fx, HudState, SceneState } from '../src/shared/protocol.js';
 import { ScriptedJudge } from '../src/server/game/parley.js';
-import { Hub, type Session } from '../src/server/hub.js';
-
-class FakeSession implements Session {
-  huds: HudState[] = [];
-  scenes: SceneState[] = [];
-  out: string[] = [];
-  constructor(readonly id: string) {}
-  send(text: string) {
-    this.out.push(text);
-  }
-  setPrompt() {}
-  hud(h: HudState) {
-    this.huds.push(h);
-  }
-  scene(s: SceneState, _a: ActionButton[]) {
-    this.scenes.push(s);
-  }
-  fx(_f: Fx) {}
-  feeds: FeedItem[] = [];
-  feed(item: FeedItem) {
-    this.feeds.push(item);
-  }
-  clear() {}
-  close() {}
-  get lastHud() {
-    return this.huds[this.huds.length - 1];
-  }
-}
+import { Hub } from '../src/server/hub.js';
+import { FakeSession } from './session.js';
 
 function lobby() {
   const hub = new Hub({ judge: new ScriptedJudge(), roundMs: 0, voteMs: 0 });

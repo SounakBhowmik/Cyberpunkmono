@@ -26,7 +26,7 @@ const ICON_COLOR: Record<OptionIcon, string> = { fight: C.red, sneak: C.violet, 
 const FONT = '"JetBrains Mono", Menlo, Consolas, monospace';
 
 interface Particle { x: number; y: number; vx: number; vy: number; life: number; max: number; color: string; size: number; gravity: number; streak?: boolean }
-interface Floater { text: string; x: number; y: number; t0: number; color: string; big?: boolean }
+interface Floater { text: string; x: number; y: number; t0: number; color: string; big?: boolean; small?: boolean }
 interface Ring { x: number; y: number; t0: number; color: string; max: number; width: number }
 interface Building { x: number; w: number; h: number; windows: number[]; sign?: string }
 interface HeroAnim { move: string; t0: number }
@@ -68,6 +68,8 @@ export class SceneView {
   private glyphOk = true;
   private linger?: { scene: SceneState; until: number };
   private title?: { text: string; sub: string; t0: number };
+  private timerEnd = 0;
+  private timerTotal = 0;
   private cards: { index: number; x: number; y: number; w: number; h: number }[] = [];
   private hoverCard = -1;
   private city: Building[] = [];
@@ -99,7 +101,17 @@ export class SceneView {
       this.deathAt = undefined;
       this.foeAnim = undefined;
     }
+    // keep the countdown in local time; the server sends how much is left
+    if (scene.timer) {
+      this.timerEnd = this.now + scene.timer.leftMs / 1000;
+      this.timerTotal = scene.timer.totalMs / 1000;
+    } else this.timerTotal = 0;
     this.scene = scene;
+  }
+
+  /** Seconds until the monster moves (or the vote closes), or undefined when nothing is ticking. */
+  get secondsLeft(): number | undefined {
+    return this.timerTotal ? Math.max(0, this.timerEnd - this.now) : undefined;
   }
 
   setLobby(lobby: Lobby) {
@@ -108,8 +120,10 @@ export class SceneView {
   }
 
   playFx(fx: Fx) {
-    const fxX = this.w * 0.72;
-    const fxY = this.h * 0.5;
+    // the monster sits top-centre and the crew along the bottom
+    const fxX = this.w * 0.5;
+    const fxY = this.h * 0.33;
+    const crewY = this.h * 0.8;
     switch (fx.kind) {
       case 'title':
         this.title = { text: fx.title, sub: fx.subtitle, t0: this.now };
@@ -119,7 +133,7 @@ export class SceneView {
         if (fx.move === 'ward') this.wardAt = this.now;
         if (fx.move === 'mend') {
           this.mendAt = this.now;
-          if (fx.amount) this.float(`+${fx.amount}`, this.w * 0.18, this.h * 0.32, C.green, true);
+          if (fx.amount) this.float(`+${fx.amount}`, this.w * 0.5, crewY - 60, C.green, true);
         }
         if (fx.amount && ['strike', 'fury', 'hex', 'bolt', 'speak'].includes(fx.move)) {
           const delay = fx.move === 'strike' || fx.move === 'fury' ? 200 : 170;
@@ -133,28 +147,28 @@ export class SceneView {
           setTimeout(() => {
             if (fx.blocked) {
               this.blockAt = this.now;
-              this.rings.push({ x: this.w * 0.24, y: this.h * 0.55, t0: this.now, color: C.yellow, max: this.h * 0.4, width: 4 });
-              this.float('BLOCKED', this.w * 0.22, this.h * 0.24, C.yellow, true);
-              this.sparks(this.w * 0.3, this.h * 0.55, C.yellow, 24);
+              this.rings.push({ x: this.w * 0.5, y: crewY - 40, t0: this.now, color: C.yellow, max: this.w * 0.4, width: 4 });
+              this.float('BLOCKED', this.w * 0.5, crewY - 70, C.yellow, true);
+              this.sparks(this.w * 0.5, crewY - 40, C.yellow, 24);
             } else {
               this.shake(fx.move === 'heavy' ? 0.5 : 0.28, fx.move === 'heavy' ? 14 : 8);
               this.punch = fx.move === 'heavy' ? 0.06 : 0.03;
               this.flashScreen(C.red, fx.move === 'heavy' ? 0.5 : 0.3);
-              this.float(`-${fx.amount}`, this.w * 0.2, this.h * 0.3, C.red, true);
+              this.float(`-${fx.amount}`, this.w * 0.5, crewY - 50, C.red, true);
             }
           }, 260);
         } else if (fx.move === 'wail') {
           this.flashScreen('#6b2bd6', 0.5);
           this.rings.push({ x: fxX, y: fxY, t0: this.now, color: C.magenta, max: this.w * 0.6, width: 2 });
-          this.float(`-${fx.amount}`, this.w * 0.2, this.h * 0.3, C.magenta, true);
+          this.float(`-${fx.amount}`, this.w * 0.5, crewY - 50, C.magenta, true);
         } else if (fx.move === 'charge') {
-          this.float('CHARGING', fxX, this.h * 0.18, C.gold, true);
+          this.float('CHARGING', fxX, fxY + this.h * 0.2, C.gold, true);
         }
         break;
       case 'stun':
         this.stunAt = this.now;
         this.rings.push({ x: fxX, y: fxY, t0: this.now, color: C.violet, max: this.h * 0.5, width: 3 });
-        this.float('INTERRUPTED', fxX, this.h * 0.18, C.violet, true);
+        this.float('INTERRUPTED', fxX, fxY + this.h * 0.2, C.violet, true);
         break;
       case 'heal':
         this.flashScreen(C.green, 0.3);
@@ -162,7 +176,15 @@ export class SceneView {
         break;
       case 'hurt':
         this.shake(0.25, 6);
+        this.flashScreen(C.red, 0.25);
+        this.float(`-${fx.amount}`, this.w * 0.5, crewY - 50, C.red, true);
         break;
+      case 'score': {
+        const at = this.heroSpot(fx.by);
+        const good = fx.points > 0;
+        this.floaters.push({ text: `${good ? '+' : ''}${fx.points} ${fx.reason.toUpperCase()}`, x: at.x, y: at.y - 10, t0: this.now + 0.35, color: good ? C.gold : C.red, small: true });
+        break;
+      }
       case 'slay':
         this.deathAt = this.now;
         this.hitStopUntil = this.now + 0.12;
@@ -203,7 +225,7 @@ export class SceneView {
       this.shake(0.22, 9);
       this.punch = 0.04;
     }
-    this.float(`${amount}`, x + (Math.random() - 0.5) * 50, this.h * 0.24, big ? C.gold : '#ffffff', true);
+    this.float(`${amount}`, x + (Math.random() - 0.5) * 60, y - this.h * 0.12, big ? C.gold : '#ffffff', true);
   }
 
   private shake(seconds: number, mag = 8) {
@@ -773,6 +795,8 @@ export class SceneView {
     const titleSize = this.narrow ? 13 : 16;
     const prompt = this.wrap(choice.prompt, this.w - 40, titleSize, 700);
     prompt.forEach((l, i) => this.text(l, this.w / 2, 24 + i * (titleSize + 6), titleSize, '#ffe9a8', 'center', 700, true));
+    const left = this.secondsLeft;
+    if (left !== undefined) this.text(`⏱ ${Math.ceil(left)}s to vote`, this.w - 16, 22, 11, left <= 10 ? C.red : C.muted, 'right', 700, true);
     const top = 24 + prompt.length * (titleSize + 6) + 8;
     const opts = choice.options;
     const stacked = this.narrow || opts.length > 3;
@@ -999,37 +1023,50 @@ export class SceneView {
 
   // ---------------------------------------------------------------- fights
 
-  private heroPositions(s: SceneState) {
-    const n = s.party.length;
-    const cols = n > 2 ? 2 : 1;
-    const rows = Math.ceil(n / cols);
-    const px = Math.max(2.5, Math.min(this.narrow ? 3.5 : 6, this.h / 70, (this.h * 0.6) / (rows * AV_H * 1.35)));
-    return s.party.map((m, i) => {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const x = this.w * (cols === 1 ? 0.15 : 0.1 + col * (this.narrow ? 0.17 : 0.12));
-      const y = this.h * (rows === 1 ? 0.55 : 0.38 + (row / (rows - 1)) * 0.34) + (col ? this.h * 0.06 : 0);
-      return { m, x, y, px };
-    });
+  /** Fights are seen from behind the crew: the monster looms at the top, the crew stands along the bottom. */
+  private fightLayout(s: SceneState) {
+    const boss = s.view === 'boss';
+    const n = Math.max(1, s.party.length);
+    const px = Math.max(2.5, Math.min(this.narrow ? 4.5 : 6.5, this.h / 72));
+    const heroH = AV_H * px;
+    const heroY = this.h - 26 - heroH / 2;
+    const spacing = Math.min(this.w * 0.2, 150, (this.w - 80) / n);
+    const heroes = s.party.map((m, i) => ({ m, x: this.w / 2 + (i - (n - 1) / 2) * spacing, y: heroY, px }));
+    const size = Math.min(this.w * 0.3, this.h * (boss ? 0.24 : 0.2));
+    return { heroes, heroY, heroTop: heroY - heroH / 2, fx: this.w / 2, fy: this.h * (boss ? 0.3 : 0.33), size, boss };
+  }
+
+  /** Where a crew member is standing right now, for floating scores. */
+  heroSpot(handle: string): { x: number; y: number } {
+    const s = this.scene;
+    if (!s) return { x: this.w / 2, y: this.h / 2 };
+    const i = Math.max(0, s.party.findIndex((m) => m.handle === handle));
+    if (s.view === 'combat' || s.view === 'boss') {
+      const h = this.fightLayout(s).heroes[i];
+      if (h) return { x: h.x, y: h.y - AV_H * h.px * 0.7 };
+    }
+    const px = this.narrow ? 2.4 : 3.2;
+    return { x: 24 + AV_W * px * 0.5 + i * (AV_W * px + 10), y: this.h - 30 - AV_H * px };
   }
 
   private drawFight(s: SceneState) {
     const ctx = this.ctx;
-    const boss = s.view === 'boss';
     const foe = s.foe;
+    const L = this.fightLayout(s);
+    const { boss, fx, fy, size, heroes } = L;
     this.backdrop(s.backdrop, 0.45);
-    // floor
-    const horizon = this.h * 0.68;
-    ctx.strokeStyle = boss ? 'rgba(255, 56, 96, 0.22)' : 'rgba(255, 43, 214, 0.18)';
+    // a floor that runs away from the crew toward the monster
+    const horizon = this.h * 0.42;
+    ctx.strokeStyle = boss ? 'rgba(255, 56, 96, 0.2)' : 'rgba(255, 43, 214, 0.16)';
     ctx.lineWidth = 1;
-    for (let i = -10; i <= 10; i++) {
+    for (let i = -12; i <= 12; i++) {
       ctx.beginPath();
-      ctx.moveTo(this.w / 2 + i * 24, horizon);
-      ctx.lineTo(this.w / 2 + i * 150, this.h);
+      ctx.moveTo(this.w / 2 + i * 18, horizon);
+      ctx.lineTo(this.w / 2 + i * 120, this.h);
       ctx.stroke();
     }
-    for (let i = 0; i < 6; i++) {
-      const k = (i + ((this.now * 0.4) % 1)) / 6;
+    for (let i = 0; i < 7; i++) {
+      const k = (i + ((this.now * 0.5) % 1)) / 7;
       const y = horizon + (this.h - horizon) * k * k;
       ctx.beginPath();
       ctx.moveTo(0, y);
@@ -1037,30 +1074,24 @@ export class SceneView {
       ctx.stroke();
     }
 
-    const heroes = this.heroPositions(s);
-    const fx = this.w * 0.72;
-    const fy = this.h * (boss ? 0.48 : 0.52);
-    const size = Math.min(this.w, this.h) * (boss ? 0.3 : 0.22);
     if (foe) {
-      if (boss) this.drawWyrm(s, foe, fx, fy, size);
-      else this.drawFoe(foe, fx, fy, size);
+      if (boss) this.drawWyrm(s, foe, fx, fy, size, L.heroY);
+      else this.drawFoe(foe, fx, fy, size, L.heroY);
     }
 
-    // the Ward: a shimmering hex pane in front of the crew
+    // the Ward: a shimmering wall of hexes between the crew and the monster
     const wardAge = this.now - this.wardAt;
     const blockAge = this.now - this.blockAt;
     if (wardAge < 1.4) {
       const a = Math.min(1, (1.4 - wardAge) * 2) * (blockAge < 0.3 ? 1 : 0.7);
-      const px = this.w * (this.narrow ? 0.34 : 0.3);
-      const top = this.h * 0.22;
-      const bottom = this.h * 0.86;
+      const y0 = L.heroTop - 34;
       this.glow(C.yellow, blockAge < 0.3 ? 30 : 14);
       ctx.strokeStyle = `rgba(255, 230, 0, ${a})`;
       ctx.lineWidth = blockAge < 0.3 ? 3 : 1.5;
-      const hr = 14;
-      for (let y = top; y < bottom; y += hr * 1.5) {
-        for (let k = 0; k < 2; k++) {
-          const x = px + k * hr * 0.86 + ((y / (hr * 1.5)) % 2 ? hr * 0.43 : 0);
+      const hr = 16;
+      for (let row = 0; row < 2; row++) {
+        for (let x = this.w * 0.12 + (row % 2) * hr * 0.43; x < this.w * 0.88; x += hr * 0.86) {
+          const y = y0 + row * hr * 0.75;
           ctx.beginPath();
           for (let i = 0; i <= 6; i++) {
             const ang = Math.PI / 6 + (i * Math.PI) / 3;
@@ -1069,7 +1100,7 @@ export class SceneView {
             if (i) ctx.lineTo(xx, yy);
             else ctx.moveTo(xx, yy);
           }
-          ctx.globalAlpha = a * (0.5 + 0.5 * Math.sin(this.now * 6 + y * 0.1));
+          ctx.globalAlpha = a * (0.5 + 0.5 * Math.sin(this.now * 6 + x * 0.05));
           ctx.stroke();
         }
       }
@@ -1077,59 +1108,88 @@ export class SceneView {
       this.noGlow();
     }
     // mend: soft rings rising through the crew
-    if (this.now - this.mendAt < 0.05) for (const h of heroes) this.risingRings(h.x, h.y + 20, C.green);
+    if (this.now - this.mendAt < 0.05) for (const h of heroes) this.risingRings(h.x, h.y, C.green);
 
     const lunge = this.foeAnim && (this.foeAnim.move === 'attack' || this.foeAnim.move === 'heavy') && !this.foeAnim.blocked;
     const struck = lunge && this.now - this.foeAnim!.t0 > 0.26 && this.now - this.foeAnim!.t0 < 0.4;
+    const target = fy + size * 0.6;
     for (const { m, x, y, px } of heroes) {
       const anim = this.heroAnims.get(m.handle);
       const age = anim ? this.now - anim.t0 : 99;
-      let dx = 0;
+      let dx = Math.sin(this.now * 2 + x) * 2;
       let dy = Math.sin(this.now * 3 + x) * 3;
       const av = buildAvatar(avatarSeed(m.handle, m.avatar), m.classes);
+      // a soft shadow grounds each hero on the floor
+      ctx.fillStyle = 'rgba(0, 240, 255, 0.1)';
+      ctx.beginPath();
+      ctx.ellipse(x, y + AV_H * px * 0.5 + 2, AV_W * px * 0.5, px * 1.4, 0, 0, Math.PI * 2);
+      ctx.fill();
       if (anim && (anim.move === 'strike' || anim.move === 'fury') && age < 0.55) {
-        const reach = fx - x - size * 0.8;
-        dx = reach * (age < 0.2 ? ease(age / 0.2) : 1 - ease((age - 0.2) / 0.35));
-        dy -= pulse(age / 0.55) * 18;
-        for (let k = 1; k <= 4; k++) {
-          ctx.globalAlpha = 0.12 * (5 - k);
-          drawAvatar(ctx, av, x + dx - k * 12 * Math.sign(reach), y + dy, px, {});
+        const reach = target - y;
+        const k = age < 0.2 ? ease(age / 0.2) : 1 - ease((age - 0.2) / 0.35);
+        dy += reach * k * 0.85;
+        dx += (fx - x) * k * 0.6;
+        for (let t = 1; t <= 4; t++) {
+          ctx.globalAlpha = 0.12 * (5 - t);
+          drawAvatar(ctx, av, x + dx, y + dy + t * 14, px * (1 - k * 0.3), {});
         }
         ctx.globalAlpha = 1;
         if (age > 0.14 && age < 0.38) this.drawSlash(fx, fy, size, (age - 0.14) / 0.24, anim.move === 'fury' ? C.gold : C.red, anim.move === 'fury');
+        drawAvatar(ctx, av, x + dx, y + dy, px * (1 - k * 0.3), { t: this.now, glow: true });
+      } else {
+        if (anim && ['hex', 'bolt', 'speak'].includes(anim.move) && age < 0.5) {
+          dy += pulse(age / 0.3) * 8;
+          this.drawProjectile(anim.move, x, y - AV_H * px * 0.5, fx, fy, age);
+        }
+        if (anim && anim.move === 'mend' && age < 0.6) dy -= pulse(age / 0.6) * 12;
+        if (anim && anim.move === 'ward' && age < 0.4) dy -= pulse(age / 0.4) * 10;
+        drawAvatar(ctx, av, x + dx, y + dy, px, { t: this.now, glow: true, flash: !!struck });
       }
-      if (anim && ['hex', 'bolt', 'speak'].includes(anim.move) && age < 0.5) {
-        dx = -pulse(age / 0.3) * 8;
-        this.drawProjectile(anim.move, x + AV_W * px * 0.4, y, fx, fy, age);
-      }
-      if (anim && anim.move === 'mend' && age < 0.6) dy -= pulse(age / 0.6) * 12;
-      if (anim && anim.move === 'ward' && age < 0.4) dx = pulse(age / 0.4) * 10;
-      drawAvatar(ctx, av, x + dx, y + dy, px, { t: this.now, glow: true, flash: !!struck });
       const label = this.narrow || s.party.length > 2 ? m.handle.slice(0, 10) : `${m.handle} · ${m.classes.join('+')}`;
-      this.text(label, x, y + AV_H * px * 0.5 + 12, 11, m.you ? C.cyan : C.muted, 'center', 400, true);
+      this.text(label, x, y + AV_H * px * 0.5 + 12, 11, m.you ? C.cyan : C.muted, 'center', m.you ? 700 : 400, true);
       if (m.ready) this.text('✓', x + AV_W * px * 0.5 + 10, y - AV_H * px * 0.4, 15, C.green, 'center', 700, true);
     }
 
     if (!foe) return;
-    this.drawIntent(foe, fx, fy - size * (boss ? 0.95 : 1.2));
-    const bw = Math.min(260, this.w * 0.34);
-    const by = 16;
+    this.drawIntent(foe, fx, fy + size * (boss ? 1.25 : 0.95), L.heroTop - 40);
+    const bw = Math.min(280, this.w * 0.36);
+    const by = 14;
     this.text(foe.name.toUpperCase(), fx, by, this.narrow ? 12 : 14, boss ? WYRM_COLORS[s.wyrm.color] : C.red, 'center', 700, true);
     ctx.fillStyle = 'rgba(255,255,255,0.08)';
-    ctx.fillRect(fx - bw / 2, by + 12, bw, 7);
+    ctx.fillRect(fx - bw / 2, by + 11, bw, 7);
     this.glow(C.red, 8);
     ctx.fillStyle = C.red;
-    ctx.fillRect(fx - bw / 2, by + 12, bw * (foe.hp / foe.maxHp), 7);
+    ctx.fillRect(fx - bw / 2, by + 11, bw * (foe.hp / foe.maxHp), 7);
     this.noGlow();
-    this.text(`${foe.hp}/${foe.maxHp}${foe.exposed ? ' · EXPOSED' : ''}`, fx, by + 30, 10, foe.exposed ? C.violet : C.muted, 'center', 400, true);
-    // round and wards
-    this.text(`ROUND ${s.round ?? 1}`, this.w * 0.15, 16, 11, C.muted, 'center', 700, true);
+    this.text(`${foe.hp}/${foe.maxHp}${foe.exposed ? ' · EXPOSED' : ''}`, fx, by + 28, 10, foe.exposed ? C.violet : C.muted, 'center', 400, true);
+    this.drawTimer(fx, by + 40, bw);
+    // round and wards sit in the bottom corner, out of the crew's way
+    const cx = Math.max(40, (this.w - heroes.length * Math.min(this.w * 0.2, 150)) / 4);
+    this.text(`ROUND ${s.round ?? 1}`, cx, this.h - 40, 11, C.muted, 'center', 700, true);
     const wards = s.wards ?? 0;
     for (let i = 0; i < Math.max(wards, 1); i++) {
       ctx.globalAlpha = wards ? 1 : 0.3;
-      this.text('⬡', this.w * 0.15 - 14 + i * 16, 34, 14, C.yellow, 'center', 700, true);
+      this.text('⬡', cx - ((Math.max(wards, 1) - 1) * 16) / 2 + i * 16, this.h - 22, 14, C.yellow, 'center', 700, true);
     }
     ctx.globalAlpha = 1;
+  }
+
+  /** The countdown to the monster's move: a draining bar that turns red and throbs at the end. */
+  private drawTimer(x: number, y: number, w: number) {
+    if (!this.timerEnd || !this.timerTotal) return;
+    const left = Math.max(0, this.timerEnd - this.now);
+    const k = Math.min(1, left / this.timerTotal);
+    const urgent = left <= 5;
+    const ctx = this.ctx;
+    const color = urgent ? C.red : k < 0.5 ? C.gold : C.cyan;
+    const throb = urgent ? 0.5 + 0.5 * Math.sin(this.now * 10) : 0;
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fillRect(x - w / 2, y, w, 5);
+    this.glow(color, 6 + throb * 14);
+    ctx.fillStyle = color;
+    ctx.fillRect(x - (w * k) / 2, y, w * k, 5);
+    this.noGlow();
+    this.text(`⏱ ${Math.ceil(left)}s`, x, y + 16, urgent ? 13 + throb * 3 : 11, color, 'center', 700, true);
   }
 
   private drawSlash(x: number, y: number, size: number, k: number, color: string, big: boolean) {
@@ -1205,7 +1265,7 @@ export class SceneView {
     this.noGlow();
   }
 
-  private drawIntent(foe: Foe, x: number, y: number) {
+  private drawIntent(foe: Foe, x: number, top: number, maxBottom: number) {
     const ctx = this.ctx;
     let label: string;
     let hint: string;
@@ -1232,7 +1292,7 @@ export class SceneView {
     const hintLines = this.wrap(hint, bw - 14, 11).slice(0, 2);
     const bh = 30 + hintLines.length * 13;
     const bx = Math.min(this.w - bw - 6, Math.max(6, x - bw / 2));
-    const by = Math.max(54, y - bh);
+    const by = Math.max(54, Math.min(top, maxBottom - bh));
     const throb = foe.intent && (foe.intent.kind === 'charge' || foe.intent.kind === 'heavy') ? 0.5 + 0.5 * Math.sin(this.now * 8) : 0;
     ctx.fillStyle = 'rgba(10, 6, 14, 0.9)';
     this.roundRect(bx, by, bw, bh, 6);
@@ -1246,7 +1306,7 @@ export class SceneView {
     hintLines.forEach((l, i) => this.text(l, bx + bw / 2, by + 31 + i * 13, 11, C.text));
   }
 
-  private drawFoe(foe: Foe, x: number, y: number, size: number) {
+  private drawFoe(foe: Foe, x: number, y: number, size: number, heroY: number) {
     const ctx = this.ctx;
     const t = this.foeClock;
     const dying = this.deathAt !== undefined ? this.now - this.deathAt : -1;
@@ -1254,12 +1314,14 @@ export class SceneView {
     const anim = this.foeAnim;
     const age = anim ? this.now - anim.t0 : 99;
     let ox = 0;
+    let oy = 0;
     let scale = foe.elite ? 1.15 : 1;
     const lunging = anim && (anim.move === 'attack' || anim.move === 'heavy') && age < 0.7;
     if (lunging) {
+      // it comes straight at the crew (and the camera)
       const k = pulse(age / 0.7);
-      ox = -k * this.w * 0.32;
-      scale *= 1 + k * (anim!.move === 'heavy' ? 0.5 : 0.25);
+      oy = k * (heroY - y) * 0.55;
+      scale *= 1 + k * (anim!.move === 'heavy' ? 0.7 : 0.4);
     }
     if (anim && anim.move === 'charge' && age < 1.2) ox = (Math.random() - 0.5) * 6;
     const hitAge = this.now - this.foeHitAt;
@@ -1273,14 +1335,14 @@ export class SceneView {
       for (let k = 1; k <= 3; k++) {
         ctx.save();
         ctx.globalAlpha = 0.12 * (4 - k);
-        ctx.translate(x + ox + k * 26, y);
+        ctx.translate(x + ox, y + oy - k * 22);
         ctx.scale(scale, scale);
         drawMonster(ctx, foe.id, size, t, color, glow, noGlow);
         ctx.restore();
       }
     }
     ctx.save();
-    ctx.translate(x + ox, y);
+    ctx.translate(x + ox, y + oy);
     ctx.scale(scale, scale);
     if (dying >= 0) {
       ctx.globalAlpha = Math.max(0, 1 - dying / 0.5);
@@ -1320,7 +1382,7 @@ export class SceneView {
     if (this.now - this.stunAt < 1.2) for (let i = 0; i < 3; i++) this.text('✦', x + ox + Math.cos(this.now * 5 + i * 2.1) * size * 0.4, y - size * 0.8 + Math.sin(this.now * 5 + i * 2.1) * 8, 14, C.violet);
   }
 
-  private drawWyrm(s: SceneState, foe: Foe, hx0: number, hy0: number, size: number) {
+  private drawWyrm(s: SceneState, foe: Foe, hx0: number, hy0: number, size: number, heroY: number) {
     const ctx = this.ctx;
     const color = WYRM_COLORS[s.wyrm.color];
     const t = this.foeClock;
@@ -1330,16 +1392,17 @@ export class SceneView {
     const age = anim ? this.now - anim.t0 : 99;
     const lunge = anim && (anim.move === 'attack' || anim.move === 'heavy') && age < 0.8 ? pulse(age / 0.8) : 0;
     const hitAge = this.now - this.foeHitAt;
-    const hx = hx0 - lunge * this.w * 0.22 + (hitAge < 0.15 ? (Math.random() - 0.5) * 12 : 0);
-    const hy = hy0 + Math.sin(t * 1.4) * 5;
+    const hx = hx0 + Math.sin(t * 0.7) * this.w * 0.03 + (hitAge < 0.15 ? (Math.random() - 0.5) * 12 : 0);
+    const hy = hy0 + Math.sin(t * 1.4) * 5 + lunge * (heroY - hy0) * 0.4;
     const r0 = size * 0.32;
     const charging = foe.intent?.kind === 'charge';
     if (dying >= 0) ctx.globalAlpha = Math.max(0, 1 - dying / 1.4);
+    // the body coils up and away, out of the top of the screen
     for (let i = 24; i >= 1; i--) {
       const k = i / 24;
-      const x = hx + r0 * 1.2 + k * this.w * 0.3 + Math.sin(k * 7 + t * 0.9) * this.w * 0.02;
-      const y = hy + Math.sin(k * Math.PI * 2.2 + t * 1.1) * this.h * 0.12 * k * 1.6 + k * this.h * 0.32;
-      const r = r0 * (k < 0.18 ? 0.55 + k * 2.4 : 0.98 - (k - 0.18) * 0.7);
+      const x = hx + Math.sin(k * Math.PI * 2.4 + t * 1.1) * this.w * 0.16 * Math.min(1, k * 2);
+      const y = hy - r0 * 0.8 - k * (hy + r0 * 3);
+      const r = r0 * (k < 0.15 ? 0.6 + k * 2.4 : 0.96 - (k - 0.15) * 0.5);
       ctx.fillStyle = '#0c0812';
       this.glow(color, 8);
       ctx.strokeStyle = hitAge < 0.09 ? '#ffffff' : color;
@@ -1349,64 +1412,77 @@ export class SceneView {
       ctx.fill();
       ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(x - r * 0.3, y - r);
-      ctx.lineTo(x, y - r * 1.6);
-      ctx.lineTo(x + r * 0.3, y - r);
+      ctx.moveTo(x - r, y - r * 0.3);
+      ctx.lineTo(x - r * 1.6, y);
+      ctx.lineTo(x - r, y + r * 0.3);
+      ctx.moveTo(x + r, y - r * 0.3);
+      ctx.lineTo(x + r * 1.6, y);
+      ctx.lineTo(x + r, y + r * 0.3);
       ctx.stroke();
     }
-    const hs = r0 * 1.9 * (1 + lunge * 0.3);
+    // the head, jaws toward the crew
+    const hs = r0 * 1.9 * (1 + lunge * 0.4);
     const jaw = 0.1 + 0.06 * Math.sin(t * 1.5) + lunge * 0.4;
     ctx.save();
     ctx.translate(hx, hy);
+    ctx.rotate(-Math.PI / 2);
     ctx.fillStyle = '#0c0812';
     this.glow(color, 18);
     ctx.strokeStyle = hitAge < 0.09 ? '#ffffff' : color;
     ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(hs * 0.6, -hs * 0.45);
-    ctx.quadraticCurveTo(-hs * 0.4, -hs * 0.6, -hs * 1.4, -hs * 0.08);
-    ctx.lineTo(-hs * 1.3, hs * 0.04);
-    ctx.lineTo(hs * 0.2, hs * 0.04);
-    ctx.quadraticCurveTo(hs * 1.0, 0, hs * 0.6, -hs * 0.45);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(hs * 0.2, hs * 0.1);
-    ctx.lineTo(-hs * 1.2, hs * (0.1 + jaw));
-    ctx.quadraticCurveTo(-hs * 0.3, hs * (0.5 + jaw * 0.6), hs * 0.6, hs * 0.4);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const tx = -hs * 1.15 + i * hs * 0.2;
-      ctx.moveTo(tx, hs * 0.04);
-      ctx.lineTo(tx + hs * 0.05, hs * 0.15);
-      ctx.lineTo(tx + hs * 0.1, hs * 0.04);
+    for (const side of [1, -1]) {
+      // upper skull and lower jaw, mirrored so the face is symmetric from the front
+      ctx.save();
+      ctx.scale(1, side);
+      ctx.beginPath();
+      ctx.moveTo(hs * 0.6, -hs * 0.45);
+      ctx.quadraticCurveTo(-hs * 0.4, -hs * 0.6, -hs * 1.4, -hs * (0.08 + jaw * 0.5));
+      ctx.lineTo(-hs * 1.3, 0);
+      ctx.lineTo(hs * 0.6, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const tx = -hs * 1.15 + i * hs * 0.2;
+        ctx.moveTo(tx, -hs * jaw * 0.5);
+        ctx.lineTo(tx + hs * 0.05, hs * (0.1 - jaw * 0.5));
+        ctx.lineTo(tx + hs * 0.1, -hs * jaw * 0.5);
+      }
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(hs * 0.3, -hs * 0.48);
+      ctx.quadraticCurveTo(hs * 0.8, -hs * 1.1, hs * 1.25, -hs * 1.15);
+      ctx.stroke();
+      const eye = charging || lunge > 0 ? C.red : color;
+      this.glow(eye, 24);
+      ctx.fillStyle = eye;
+      ctx.beginPath();
+      ctx.ellipse(-hs * 0.2, -hs * 0.3, hs * 0.16, hs * 0.08, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#05040a';
+      ctx.beginPath();
+      ctx.ellipse(-hs * 0.2, -hs * 0.3, hs * 0.07, hs * 0.025, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#0c0812';
+      this.glow(color, 18);
+      ctx.restore();
     }
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(hs * 0.3, -hs * 0.48);
-    ctx.quadraticCurveTo(hs * 0.8, -hs * 1.2, hs * 1.25, -hs * 1.2);
-    ctx.moveTo(hs * 0.05, -hs * 0.55);
-    ctx.quadraticCurveTo(hs * 0.3, -hs * 1.1, hs * 0.7, -hs * 1.35);
-    ctx.stroke();
-    const eye = charging || lunge > 0 ? C.red : color;
-    this.glow(eye, 24);
-    ctx.fillStyle = eye;
-    ctx.beginPath();
-    ctx.ellipse(-hs * 0.4, -hs * 0.24, hs * 0.2, hs * 0.1, -0.2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#05040a';
-    ctx.beginPath();
-    ctx.ellipse(-hs * 0.4, -hs * 0.24, hs * 0.03, hs * 0.09, 0, 0, Math.PI * 2);
-    ctx.fill();
     ctx.restore();
     this.noGlow();
     ctx.globalAlpha = 1;
-    if (Math.random() < 0.6) this.particles.push({ x: hx - hs * 1.3, y: hy + hs * 0.1, vx: -40 - Math.random() * 60, vy: (Math.random() - 0.5) * 30, life: 0, max: 1.2, color: charging ? C.red : color, size: 2.2, gravity: -10 });
-    if (foe.exposed) this.text('ᚱ ᚱ ᚱ', hx - hs * 0.4, hy - hs * 0.9, 14, C.violet, 'center', 700, true);
+    // breath curls out of the jaws, down toward the crew
+    if (Math.random() < 0.6) this.particles.push({ x: hx + (Math.random() - 0.5) * hs * 0.3, y: hy + hs * 1.3, vx: (Math.random() - 0.5) * 60, vy: 40 + Math.random() * 60, life: 0, max: 1.2, color: charging ? C.red : color, size: 2.2, gravity: -10 });
+    if (foe.exposed) this.text('ᚱ ᚱ ᚱ', hx, hy - hs * 0.8, 14, C.violet, 'center', 700, true);
+    if (foe.intent?.kind === 'shell') {
+      this.glow(C.cyan, 16);
+      ctx.strokeStyle = `rgba(0, 240, 255, ${0.45 + 0.2 * Math.sin(this.now * 4)})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(hx, hy + hs * 0.2, hs * 1.1, hs * 1.4, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      this.noGlow();
+    }
     if (this.now - this.stunAt < 1.2) for (let i = 0; i < 3; i++) this.text('✦', hx + Math.cos(this.now * 5 + i * 2.1) * hs * 0.5, hy - hs * 0.9, 16, C.violet);
   }
 
@@ -1511,13 +1587,15 @@ export class SceneView {
   private drawFloaters() {
     for (const f of this.floaters) {
       const age = this.now - f.t0;
+      if (age < 0) continue;
+      const life = f.small ? 1.6 : 1.2;
       const pop = 1 + Math.max(0, 0.45 - age * 2.5);
-      this.ctx.globalAlpha = Math.max(0, 1 - age / 1.2);
-      this.glow(f.color, 10);
-      this.text(f.text, f.x, f.y - age * 36, (f.big ? 22 : 15) * pop, f.color, 'center', 700, true);
+      this.ctx.globalAlpha = Math.max(0, 1 - age / life);
+      this.glow(f.color, f.small ? 6 : 10);
+      this.text(f.text, f.x, f.y - age * (f.small ? 22 : 36), (f.big ? 22 : f.small ? 11 : 15) * pop, f.color, 'center', 700, true);
       this.noGlow();
     }
     this.ctx.globalAlpha = 1;
-    this.floaters = this.floaters.filter((f) => this.now - f.t0 < 1.2);
+    this.floaters = this.floaters.filter((f) => this.now - f.t0 < (f.small ? 1.6 : 1.2));
   }
 }

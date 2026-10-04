@@ -3,7 +3,7 @@
 // music and effects, and keeps a small terminal for typed commands.
 
 export type ClassId = 'rogue' | 'mage' | 'cleric';
-export type ModeId = 'adventure' | 'heist' | 'survival';
+export type ModeId = 'adventure' | 'heist' | 'survival' | 'tutorial';
 export type WyrmColor = 'red' | 'blue' | 'green' | 'black' | 'white';
 export type Mood = 'lobby' | 'story' | 'tense' | 'combat' | 'boss' | 'night' | 'victory' | 'defeat';
 export type Backdrop = 'city' | 'street' | 'market' | 'bridge' | 'shrine' | 'tower' | 'vault' | 'lair' | 'camp';
@@ -37,7 +37,7 @@ export interface Meter {
 
 export type HudState =
   | { mode: 'street'; handle?: string; avatar?: number }
-  | { mode: 'safehouse'; code: string; party: HudMember[]; story: ModeId }
+  | { mode: 'safehouse'; code: string; party: HudMember[]; story: ModeId; resume?: { chapter: number; title: string } }
   | {
       mode: 'delve';
       code: string;
@@ -97,6 +97,65 @@ export interface SceneState {
   round?: number;
   wards?: number;
   ending?: { title: string; text: string; win: boolean };
+  /** The monster attacks (or the vote closes) when this runs out. */
+  timer?: { leftMs: number; totalMs: number };
+  /** The Warden's running score for each player. */
+  scores?: ScoreLine[];
+  /** Filled in when the story ends. */
+  result?: RunResult;
+}
+
+export interface ScoreLine {
+  handle: string;
+  points: number;
+  you: boolean;
+}
+
+/** What the Warden counted for one player over a whole story. */
+export interface PlayerStats {
+  handle: string;
+  you: boolean;
+  points: number;
+  cleanWards: number;
+  brokenCharges: number;
+  pierced: number;
+  doubles: number;
+  goodCalls: number;
+  idle: number;
+  glyphs: number;
+  persuasion: number;
+}
+
+export interface RunResult {
+  story: ModeId;
+  title: string;
+  win: boolean;
+  meter: number;
+  seconds: number;
+  /** 0-3 */
+  stars: number;
+  team: number;
+  mvp?: string;
+  flags: string[];
+  glyphMisses: number;
+  players: PlayerStats[];
+}
+
+/** Saved at the start of every chapter so a crew can pick the story back up. */
+export interface Checkpoint {
+  v: 1;
+  story: ModeId;
+  node: string;
+  chapter: number;
+  title: string;
+  meter: number;
+  boons: string[];
+  flags: string[];
+  breed: WyrmColor;
+  wyrm: string;
+  points: Record<string, number>;
+  crew: string[];
+  savedAt: number;
 }
 
 export interface ActionButton {
@@ -133,6 +192,7 @@ export type Fx =
   | { kind: 'glyph'; ok: boolean; glyph: Glyph }
   | { kind: 'boon'; name: string }
   | { kind: 'vote'; by: string }
+  | { kind: 'score'; by: string; points: number; reason: string }
   | { kind: 'end'; win: boolean };
 
 export type ServerMessage =
@@ -142,8 +202,9 @@ export type ServerMessage =
   | { type: 'hud'; hud: HudState }
   | { type: 'scene'; scene: SceneState; actions: ActionButton[] }
   | { type: 'feed'; item: FeedItem }
-  | { type: 'fx'; fx: Fx };
+  | { type: 'fx'; fx: Fx }
+  | { type: 'checkpoint'; checkpoint: Checkpoint | null };
 
-export type ClientMessage = { type: 'line'; text: string };
+export type ClientMessage = { type: 'line'; text: string } | { type: 'resume'; checkpoint: Checkpoint };
 
 export const MAX_LINE_LENGTH = 300;
