@@ -3,10 +3,10 @@
 // music and effects, and keeps a small terminal for typed commands.
 
 export type ClassId = 'rogue' | 'mage' | 'cleric';
-export type ModeId = 'adventure' | 'heist' | 'survival' | 'tutorial';
+export type ModeId = 'adventure' | 'heist' | 'survival' | 'daily' | 'tutorial';
 export type WyrmColor = 'red' | 'blue' | 'green' | 'black' | 'white';
 export type Mood = 'lobby' | 'story' | 'tense' | 'combat' | 'boss' | 'night' | 'victory' | 'defeat';
-export type Backdrop = 'city' | 'street' | 'market' | 'bridge' | 'shrine' | 'tower' | 'vault' | 'lair' | 'camp';
+export type Backdrop = 'city' | 'street' | 'market' | 'bridge' | 'shrine' | 'tower' | 'vault' | 'lair' | 'camp' | 'castle' | 'cathedral' | 'abyss';
 export type Glyph = 'moon' | 'eye' | 'serpent' | 'crown' | 'key';
 export type OptionIcon = 'fight' | 'sneak' | 'talk' | 'help' | 'rest' | 'loot' | 'risk' | 'path';
 
@@ -35,8 +35,16 @@ export interface Meter {
   value: number;
 }
 
+export interface AvailableRoom {
+  code: string;
+  host: string;
+  players: number;
+  max: number;
+  story: ModeId;
+}
+
 export type HudState =
-  | { mode: 'street'; handle?: string; avatar?: number }
+  | { mode: 'street'; handle?: string; avatar?: number; rooms?: AvailableRoom[] }
   | { mode: 'safehouse'; code: string; party: HudMember[]; story: ModeId; resume?: { chapter: number; title: string } }
   | {
       mode: 'delve';
@@ -91,11 +99,15 @@ export interface SceneState {
   party: HudMember[];
   wyrm: WyrmInfo;
   choice?: { prompt: string; options: ChoiceOption[] };
-  puzzle?: { length: number; progress: number; misses: number; maxMisses: number; sequence?: Glyph[] };
+  puzzle?: { length: number; progress: number; misses: number; maxMisses: number; sequence?: Glyph[]; shown?: Glyph };
   parley?: { npc: string; name: string; said?: string; saidBy?: string; reply?: string; progress: number; goal: number; linesLeft: number };
   foe?: Foe;
   round?: number;
   wards?: number;
+  /** This Joe's chosen equipment while the crew prepares an automatic fight. */
+  loadout?: { selected: { kind: 'attack' | 'magic' | 'defense'; id: string; name: string; icon: string; power: number }[]; ready: number; total: number };
+  /** The encounter clock is paused until every crew member confirms they are ready. */
+  waitingForReady?: boolean;
   ending?: { title: string; text: string; win: boolean };
   /** The monster attacks (or the vote closes) when this runs out. */
   timer?: { leftMs: number; totalMs: number };
@@ -115,6 +127,7 @@ export interface ScoreLine {
 export interface PlayerStats {
   handle: string;
   you: boolean;
+  classes: ClassId[];
   points: number;
   cleanWards: number;
   brokenCharges: number;
@@ -138,6 +151,8 @@ export interface RunResult {
   mvp?: string;
   flags: string[];
   glyphMisses: number;
+  /** Relics physically recovered during this expedition. */
+  foundItems?: string[];
   players: PlayerStats[];
 }
 
@@ -205,6 +220,10 @@ export type ServerMessage =
   | { type: 'fx'; fx: Fx }
   | { type: 'checkpoint'; checkpoint: Checkpoint | null };
 
-export type ClientMessage = { type: 'line'; text: string } | { type: 'resume'; checkpoint: Checkpoint };
+export type ClientMessage =
+  | { type: 'line'; text: string }
+  | { type: 'resume'; checkpoint: Checkpoint }
+  | { type: 'hello'; name: string; inventory: string[] }
+  | { type: 'inventory'; inventory: string[] };
 
 export const MAX_LINE_LENGTH = 300;

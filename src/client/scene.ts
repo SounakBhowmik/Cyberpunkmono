@@ -674,6 +674,80 @@ export class SceneView {
         ctx.globalAlpha = 1;
         break;
       }
+      case 'castle': {
+        this.sky('#090512', '#010104');
+        ctx.globalAlpha = dim;
+        // Ashenwake hangs upside down: needle towers descend from a broken moon.
+        ctx.fillStyle = 'rgba(210, 220, 255, 0.12)';
+        ctx.beginPath();
+        ctx.arc(this.w * 0.74, this.h * 0.18, Math.min(this.w, this.h) * 0.12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#080711';
+        for (let i = 0; i < 7; i++) {
+          const x = this.w * (0.08 + i * 0.14);
+          const wide = 34 + (i % 3) * 14;
+          const bottom = this.h * (0.5 + (i % 2) * 0.08);
+          ctx.fillRect(x - wide / 2, 0, wide, bottom);
+          ctx.beginPath();
+          ctx.moveTo(x - wide / 2 - 8, bottom);
+          ctx.lineTo(x, bottom + 70 + (i % 3) * 18);
+          ctx.lineTo(x + wide / 2 + 8, bottom);
+          ctx.fill();
+          ctx.fillStyle = 'rgba(255, 184, 0, 0.35)';
+          ctx.fillRect(x - 3, bottom * 0.48, 6, 15);
+          ctx.fillStyle = '#080711';
+        }
+        ctx.strokeStyle = 'rgba(255, 184, 0, 0.16)';
+        for (let i = 0; i < 4; i++) {
+          const y = this.h * (0.68 + i * 0.06) + Math.sin(t + i) * 3;
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.bezierCurveTo(this.w * 0.3, y - 18, this.w * 0.7, y + 18, this.w, y); ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+        break;
+      }
+      case 'cathedral': {
+        this.sky('#07040e', '#010104');
+        ctx.globalAlpha = dim;
+        const cx = this.w / 2;
+        // A huge animated rose window makes the location unmistakable.
+        this.glow(C.red, 16);
+        ctx.strokeStyle = 'rgba(255, 56, 96, 0.45)';
+        ctx.lineWidth = 2;
+        for (let ring = 1; ring <= 4; ring++) {
+          ctx.beginPath(); ctx.arc(cx, this.h * 0.32, ring * 28, 0, Math.PI * 2); ctx.stroke();
+        }
+        for (let i = 0; i < 12; i++) {
+          const a = i * Math.PI / 6 + t * 0.035;
+          ctx.beginPath(); ctx.moveTo(cx, this.h * 0.32); ctx.lineTo(cx + Math.cos(a) * 112, this.h * 0.32 + Math.sin(a) * 112); ctx.stroke();
+        }
+        this.noGlow();
+        ctx.fillStyle = '#080711';
+        for (const x of [0.08, 0.23, 0.77, 0.92]) {
+          ctx.fillRect(this.w * x - 22, this.h * 0.2, 44, this.h * 0.7);
+          ctx.beginPath(); ctx.moveTo(this.w * x - 30, this.h * 0.2); ctx.lineTo(this.w * x, this.h * 0.08); ctx.lineTo(this.w * x + 30, this.h * 0.2); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        break;
+      }
+      case 'abyss': {
+        this.sky('#02020a', '#000000');
+        ctx.globalAlpha = dim;
+        // Floating dungeon fragments drift around a black sun.
+        const pulse = 42 + Math.sin(t * 0.5) * 5;
+        this.glow('#8a62ff', 24);
+        ctx.fillStyle = 'rgba(80, 45, 145, 0.45)';
+        ctx.beginPath(); ctx.arc(this.w / 2, this.h * 0.25, pulse, 0, Math.PI * 2); ctx.fill();
+        this.noGlow();
+        ctx.fillStyle = '#05040c';
+        for (let i = 0; i < 8; i++) {
+          const x = (i + 0.5) * this.w / 8;
+          const y = this.h * (0.5 + (i % 3) * 0.12) + Math.sin(t * 0.4 + i) * 8;
+          ctx.beginPath(); ctx.moveTo(x - 52, y); ctx.lineTo(x + 45, y - 8); ctx.lineTo(x + 20, y + 18); ctx.lineTo(x - 18, y + 55); ctx.fill();
+          ctx.strokeStyle = 'rgba(0, 240, 255, 0.18)'; ctx.beginPath(); ctx.moveTo(x - 42, y); ctx.lineTo(x + 34, y - 6); ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+        break;
+      }
       case 'lair': {
         this.sky('#08030a', '#000000');
         ctx.globalAlpha = dim;
@@ -744,11 +818,51 @@ export class SceneView {
   // ---------------------------------------------------------------- lobby
 
   private drawLobby() {
-    this.sky();
-    this.drawCity(0.9);
+    this.sky('#080511', '#020104');
+    this.drawCity(0.72);
+    const ctx = this.ctx;
+    // A half-seen eye hangs behind the title; fog repeatedly hides it.
+    const ex = this.w * 0.5 + Math.sin(this.now * 0.18) * this.w * 0.025;
+    const ey = this.h * 0.19;
+    const ew = Math.min(this.w * 0.36, 300);
+    const eh = ew * 0.22;
+    const aura = ctx.createRadialGradient(ex, ey, 2, ex, ey, ew * 0.75);
+    aura.addColorStop(0, 'rgba(255,184,0,.2)');
+    aura.addColorStop(.4, 'rgba(255,43,214,.07)');
+    aura.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = aura;
+    ctx.fillRect(ex - ew, ey - ew, ew * 2, ew * 2);
+    ctx.save();
+    ctx.globalAlpha = .58 + Math.sin(this.now * .7) * .08;
+    this.glow('#ff4b68', 20);
+    ctx.strokeStyle = '#8f294d';
+    ctx.fillStyle = 'rgba(50,5,24,.65)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(ex - ew / 2, ey);
+    ctx.quadraticCurveTo(ex, ey - eh, ex + ew / 2, ey);
+    ctx.quadraticCurveTo(ex, ey + eh, ex - ew / 2, ey);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#ffb800';
+    ctx.beginPath();
+    ctx.ellipse(ex, ey, 7 + Math.sin(this.now) * 2, eh * .75, 0, 0, Math.PI * 2);
+    ctx.fill();
+    this.noGlow();
+    ctx.restore();
+    for (let i = 0; i < 4; i++) {
+      const y = this.h * (.34 + i * .12) + Math.sin(this.now * (.12 + i * .03) + i) * 12;
+      const fog = ctx.createLinearGradient(0, y, this.w, y);
+      fog.addColorStop(0, 'rgba(100,70,130,0)');
+      fog.addColorStop(.35, `rgba(105,80,135,${.025 + i * .008})`);
+      fog.addColorStop(.7, 'rgba(70,50,100,.02)');
+      fog.addColorStop(1, 'rgba(70,50,100,0)');
+      ctx.fillStyle = fog;
+      ctx.fillRect(0, y, this.w, 28 + i * 9);
+    }
     const size = Math.min(54, this.w / 9);
     const crew = this.lobby.crew ?? [];
-    const titleY = crew.length ? this.h * 0.17 : this.h * 0.3;
+    const titleY = crew.length ? this.h * 0.2 : this.h * 0.38;
     this.glow(C.gold, 22);
     this.text(this.lobby.title, this.w / 2, titleY, size, '#ffe9a8', 'center', 700);
     this.noGlow();
@@ -990,7 +1104,11 @@ export class SceneView {
         this.noGlow();
       });
     } else {
-      this.text('the Mage can read the glyphs · the Rogue presses them', cx, cy - r - 24, 12, C.muted, 'center', 400, true);
+      if (pz.shown) {
+        this.glow(C.cyan, 18);
+        this.text(`MAGE SIGNAL  ${GLYPH_CHAR[pz.shown]}`, cx, cy - r - 24, 18, C.cyan, 'center', 700, true);
+        this.noGlow();
+      } else this.text('the Mage can read the glyphs · the Rogue presses them', cx, cy - r - 24, 12, C.muted, 'center', 400, true);
     }
     this.drawCrew(s, this.h - 12);
   }
@@ -1055,6 +1173,14 @@ export class SceneView {
     const L = this.fightLayout(s);
     const { boss, fx, fy, size, heroes } = L;
     this.backdrop(s.backdrop, 0.45);
+    if (s.loadout) {
+      const chosen = s.loadout.selected.length
+        ? s.loadout.selected.map((item) => `${item.icon} ${item.name.toUpperCase()} · ${item.power}`).join('   ')
+        : 'BASIC GEAR · CHOOSE RELICS BELOW';
+      this.text('PREPARE THE CREW', this.w / 2, 20, this.narrow ? 12 : 15, C.gold, 'center', 700, true);
+      this.text(chosen, this.w / 2, 42, this.narrow ? 8 : 10, C.text, 'center', 400, true);
+      this.text(`${s.loadout.ready}/${s.loadout.total} JOES READY`, this.w / 2, 59, 9, C.muted, 'center', 700, true);
+    }
     // a floor that runs away from the crew toward the monster
     const horizon = this.h * 0.42;
     ctx.strokeStyle = boss ? 'rgba(255, 56, 96, 0.2)' : 'rgba(255, 43, 214, 0.16)';
@@ -1119,6 +1245,10 @@ export class SceneView {
       let dx = Math.sin(this.now * 2 + x) * 2;
       let dy = Math.sin(this.now * 3 + x) * 3;
       const av = buildAvatar(avatarSeed(m.handle, m.avatar), m.classes);
+      if (struck) {
+        dx += (x < fx ? -1 : 1) * 12;
+        dy += 10;
+      }
       // a soft shadow grounds each hero on the floor
       ctx.fillStyle = 'rgba(0, 240, 255, 0.1)';
       ctx.beginPath();
@@ -1138,11 +1268,21 @@ export class SceneView {
         drawAvatar(ctx, av, x + dx, y + dy, px * (1 - k * 0.3), { t: this.now, glow: true });
       } else {
         if (anim && ['hex', 'bolt', 'speak'].includes(anim.move) && age < 0.5) {
-          dy += pulse(age / 0.3) * 8;
+          const cast = pulse(age / 0.5);
+          dx += (x < fx ? -1 : 1) * cast * 20;
+          dy -= cast * 9;
           this.drawProjectile(anim.move, x, y - AV_H * px * 0.5, fx, fy, age);
         }
-        if (anim && anim.move === 'mend' && age < 0.6) dy -= pulse(age / 0.6) * 12;
-        if (anim && anim.move === 'ward' && age < 0.4) dy -= pulse(age / 0.4) * 10;
+        if (anim && anim.move === 'mend' && age < 0.6) {
+          const aid = pulse(age / 0.6);
+          dx += (fx - x) * aid * .16;
+          dy -= aid * 15;
+        }
+        if (anim && anim.move === 'ward' && age < 0.55) {
+          const brace = pulse(age / 0.55);
+          dx += (fx - x) * brace * .22;
+          dy -= brace * 25;
+        }
         drawAvatar(ctx, av, x + dx, y + dy, px, { t: this.now, glow: true, flash: !!struck });
       }
       const label = this.narrow || s.party.length > 2 ? m.handle.slice(0, 10) : `${m.handle} · ${m.classes.join('+')}`;

@@ -1,6 +1,7 @@
 import type {
   ActionButton, Checkpoint, ClassId, FeedItem, Foe, Fx, Glyph, HudMember, HudState, ModeId, Move, PlayerStats, Portrait, RunResult, SceneState, WyrmColor, WyrmInfo,
 } from '../../shared/protocol.js';
+import { ITEMS, itemById, type ItemKind } from '../../shared/items.js';
 import { c } from '../ansi.js';
 import { BREEDS, BREED_IDS, type Breed } from './breeds.js';
 import {
@@ -50,6 +51,12 @@ export interface GameOptions {
   voteMs?: number;
   /** Pick the story back up from a saved chapter. */
   checkpoint?: Checkpoint;
+  /** Fixed roles for solo crews. */
+  classes?: Record<string, ClassId[]>;
+  /** Player-owned equipment IDs, offered before every automatic fight. */
+  inventory?: Record<string, string[]>;
+  /** Solo difficulty multiplier for foe health and damage. */
+  difficulty?: number;
 }
 
 type Phase = 'story' | 'choice' | 'puzzle' | 'parley' | 'combat' | 'boss' | 'ended';
@@ -79,7 +86,7 @@ interface Queued {
   at: number;
 }
 
-type Stats = Omit<PlayerStats, 'handle' | 'you'>;
+type Stats = Omit<PlayerStats, 'handle' | 'you' | 'classes'>;
 const blankStats = (): Stats => ({ points: 0, cleanWards: 0, brokenCharges: 0, pierced: 0, doubles: 0, goodCalls: 0, idle: 0, glyphs: 0, persuasion: 0 });
 
 interface ParleyState {
@@ -99,6 +106,7 @@ interface ParleyState {
 
 /** Shields and heals land first, then set-ups, then the big hits. */
 const ORDER: Move[] = ['ward', 'mend', 'hex', 'bolt', 'speak', 'strike', 'fury'];
+const CLASS_ITEM: Record<ClassId, ItemKind> = { rogue: 'attack', mage: 'magic', cleric: 'defense' };
 const CORPS = ['Arasaka-Vey', 'Kiroshi Dynamics', 'Militech Halcyon', 'Zetatech Lumen', 'Biotechnica Rho'];
 const NPC_NAME: Record<string, string> = { kitsune: 'The Kitsune', fixer: 'The Fixer', oracle: 'The Oracle', scavenger: 'Rook' };
 const SITUATION: Record<string, string> = {
@@ -107,6 +115,12 @@ const SITUATION: Record<string, string> = {
   vault: 'Thieves have reached the vault where you are chained. Let them take your heart only if they convince you they will free you, not sell you.',
   boss: 'A crew of small spirits is fighting to seal you. Some of them speak instead of attacking.',
 };
+
+/** Chapter one starts at 1× pressure; the last chapter reaches exactly 5×. */
+export function chapterDifficulty(chapter: number, chapters: number) {
+  if (chapters <= 1) return 1;
+  return 1 + 4 * Math.max(0, Math.min(1, (chapter - 1) / (chapters - 1)));
+}
 
 export class Game {
   readonly story: Story;
@@ -137,6 +151,10 @@ export class Game {
   private readonly startedAt = Date.now();
   private readonly votes = new Map<string, number>();
   private readonly acted = new Map<string, Set<ClassId>>();
+  private readonly encounterReady = new Set<string>();
+  private readonly loadouts = new Map<string, Map<ItemKind, string>>();
+  private waitingForReady = false;
+  private autoTimer?: NodeJS.Timeout;
   private queued: Queued[] = [];
   private wardsUsed = 0;
   private called?: { by: string; label: string };
@@ -153,6 +171,7 @@ export class Game {
   private lastFoeMove?: string;
   private shownGlyph = -1;
   private glyphMisses = 0;
+  private readonly foundItems = new Set<string>();
   /** The Warden's tally, by handle so it survives a reconnect or a resume. */
   private readonly stats = new Map<string, Stats>();
 
@@ -171,7 +190,9 @@ export class Game {
       this.players.set(p.id, p);
       this.stats.set(p.handle, { ...blankStats(), points: cp?.points[p.handle] ?? 0 });
     }
-    this.assignClasses(this.rng.shuffle(players.map((p) => p.id)));
+    if (opts.classes) {
+      for (const p of players) this.classes.set(p.id, [...(opts.classes[p.id] ?? ['rogue'])]);
+    } else this.assignClasses(this.rng.shuffle(players.map((p) => p.id)));
     if (cp) {
       this.meter = cp.meter;
       for (const b of cp.boons) this.boons.add(b);
@@ -195,7 +216,7 @@ export class Game {
       !!story.nodes[c.node] &&
       Number.isInteger(c.meter) && c.meter! >= 0 && c.meter! < 100 &&
       Array.isArray(c.boons) && c.boons.length <= 8 && c.boons.every((b) => typeof b === 'string' && b in BOONS) &&
-      Array.isArray(c.flags) && c.flags.length <= 20 && c.flags.every((f) => typeof f === 'string' && f.length <= 24) &&
+      Array.isArray(c.flags) && c.flags.length <= 48 && c.flags.every((f) => typeof f === 'string' && f.length <= 24) &&
       typeof c.breed === 'string' && BREED_IDS.includes(c.breed as WyrmColor) &&
       typeof c.wyrm === 'string' &&
       !!c.points && typeof c.points === 'object' && Object.values(c.points).every((n) => Number.isInteger(n) && Math.abs(n as number) < 100_000)
@@ -225,9 +246,9 @@ export class Game {
 
   private brief(p: GamePlayer) {
     const role: Record<ClassId, string> = {
-      rogue: 'You are the ROGUE. You deal the damage, and only you can touch the glyphs on a lock.',
-      mage: 'You are the MAGE. Only you can see what a monster will do next, and read the glyphs on a lock. Call it out to your crew.',
-      cleric: 'You are the CLERIC. You Ward the crew from attacks (only a few each chapter) and Mend their wounds.',
+      rogue: 'You are the ROGUE. Choose attack relics before battle; your Joe will find openings automatically. Only you can touch glyph locks.',
+      mage: 'You are the MAGE. Choose magic relics before battle; your Joe will break charges and pierce shells automatically. You can read glyph locks.',
+      cleric: 'You are the CLERIC. Choose defense relics before battle; your Joe will ward and restore the crew automatically.',
     };
     const mine = (this.classes.get(p.id) ?? []).map((cls) => role[cls]);
     if (mine.length) p.feed({ kind: 'tip', text: mine.join(' ') });
@@ -298,8 +319,12 @@ export class Game {
   }
 
   private party(viewer: string): HudMember[] {
-    const fighting = this.phase === 'combat' || this.phase === 'boss';
-    return [...this.players.values()].map((p) => ({ ...this.member(p), you: p.id === viewer, ...(fighting ? { ready: this.isReady(p.id) } : {}) }));
+    const fighting = this.phase === 'combat' || this.phase === 'boss' || this.waitingForReady;
+    return [...this.players.values()].map((p) => ({
+      ...this.member(p),
+      you: p.id === viewer,
+      ...(fighting ? { ready: this.waitingForReady ? this.encounterReady.has(p.id) : true } : {}),
+    }));
   }
 
   private node(): StoryNode {
@@ -380,7 +405,7 @@ export class Game {
           }
         : {}),
       ...(this.phase === 'puzzle' && pz
-        ? { puzzle: { length: pz.sequence.length, progress: pz.progress, misses: pz.misses, maxMisses: NUM.maxMisses, ...(this.has(id, 'mage') ? { sequence: pz.sequence } : {}) } }
+        ? { puzzle: { length: pz.sequence.length, progress: pz.progress, misses: pz.misses, maxMisses: NUM.maxMisses, ...(this.has(id, 'mage') ? { sequence: pz.sequence } : {}), ...(this.shownGlyph === pz.progress ? { shown: pz.sequence[pz.progress] } : {}) } }
         : {}),
       ...(this.phase === 'parley' && pl
         ? { parley: { npc: pl.npc, name: pl.ctx.name, progress: pl.progress, goal: pl.goal, linesLeft: pl.linesLeft, ...(pl.said ? { said: pl.said, saidBy: pl.saidBy } : {}), ...(pl.reply ? { reply: pl.reply } : {}) } }
@@ -389,6 +414,19 @@ export class Game {
         ? { parley: { npc: 'wyrm', name: this.wyrmName, progress: 0, goal: 0, linesLeft: 0, ...this.bossTalk } }
         : {}),
       ...(foe ? { foe, round: this.round, wards: this.wardsLeft() } : {}),
+      ...((this.phase === 'combat' || this.phase === 'boss') && this.waitingForReady
+        ? {
+            loadout: {
+              selected: [...(this.loadouts.get(id) ?? [])].map(([kind, itemId]) => {
+                const item = itemById(itemId)!;
+                return { kind, id: item.id, name: item.name, icon: item.icon, power: item.power };
+              }),
+              ready: this.encounterReady.size,
+              total: this.players.size,
+            },
+          }
+        : {}),
+      ...(this.waitingForReady ? { waitingForReady: true } : {}),
       ...(this.ending ? { ending: this.ending, result: this.result(id) } : {}),
       ...this.timerView(),
       scores: this.scoreLines(id),
@@ -402,7 +440,7 @@ export class Game {
 
   private result(viewer: string): RunResult {
     const win = this.ending?.win ?? false;
-    const players = [...this.players.values()].map((p) => ({ handle: p.handle, you: p.id === viewer, ...this.statsOf(p.id) }));
+    const players = [...this.players.values()].map((p) => ({ handle: p.handle, you: p.id === viewer, classes: [...(this.classes.get(p.id) ?? [])], ...this.statsOf(p.id) }));
     const best = [...players].sort((a, b) => b.points - a.points)[0];
     const team = Math.max(0, players.reduce((sum, p) => sum + p.points, 0) + (win ? 200 + (100 - this.meter) * 2 : 0));
     return {
@@ -416,11 +454,38 @@ export class Game {
       ...(best && best.points > 0 && players.length > 1 ? { mvp: best.handle } : {}),
       flags: [...this.flags],
       glyphMisses: this.glyphMisses,
+      foundItems: [...this.foundItems],
       players,
     };
   }
 
   private actionsFor(id: string): ActionButton[] {
+    if (this.waitingForReady) {
+      const ready = this.encounterReady.has(id);
+      if (this.phase === 'combat' || this.phase === 'boss') {
+        const owned = new Set(this.opts.inventory?.[id] ?? []);
+        const selected = this.loadouts.get(id) ?? new Map<ItemKind, string>();
+        const kinds = new Set((this.classes.get(id) ?? []).map((cls) => CLASS_ITEM[cls]));
+        const gear = ITEMS.filter((item) => kinds.has(item.kind) && owned.has(item.id)).map<ActionButton>((item) => ({
+          label: `${selected.get(item.kind) === item.id ? '✓ ' : ''}${item.icon} ${item.name}`,
+          cmd: `equip ${item.id}`,
+          tone: item.kind === 'attack' ? 'fight' : item.kind === 'magic' ? 'magic' : 'go',
+          hint: `${item.rarity} · power ${item.power} · ${item.effect}`,
+          group: `${item.kind} relics`,
+          disabled: ready,
+        }));
+        return [
+          ...gear,
+          {
+            label: ready ? 'Waiting for crew' : 'Lock loadout & begin', cmd: 'ready', tone: ready ? 'info' : 'go',
+            hint: gear.length ? 'unfilled roles use basic gear' : 'you have no relics yet; the crew will use basic gear',
+            group: `crew ${this.encounterReady.size}/${this.players.size}`, disabled: ready,
+          },
+        ];
+      }
+      const challenge = this.phase === 'puzzle' ? 'glyph lock' : this.phase === 'parley' ? 'conversation' : 'battle';
+      return [{ label: ready ? 'Waiting for crew' : 'Ready', cmd: 'ready', tone: ready ? 'info' : 'go', hint: ready ? `the ${challenge} begins when everyone is ready` : 'I have read the briefing', group: `prepare for ${challenge}`, disabled: ready }];
+    }
     switch (this.phase) {
       case 'choice': {
         const mine = this.votes.get(id);
@@ -443,32 +508,8 @@ export class Game {
         return [{ label: `Speak to ${pl.ctx.name}`, cmd: 'speak ', input: true, tone: 'talk', hint: pl.ctx.temperament, group: `${pl.linesLeft} line${pl.linesLeft === 1 ? '' : 's'} left`, disabled: pl.busy }];
       }
       case 'combat':
-      case 'boss': {
-        const out: ActionButton[] = [];
-        const used = this.acted.get(id) ?? new Set<ClassId>();
-        for (const cls of this.classes.get(id) ?? []) {
-          for (const move of CLASS_MOVES[cls]) {
-            const spec = MOVES[move];
-            const noWards = move === 'ward' && this.wardsLeft() === 0;
-            out.push({
-              label: move === 'ward' ? `Ward (${this.wardsLeft()})` : spec.label,
-              cmd: move,
-              tone: spec.tone,
-              hint: noWards ? 'no Wards left this chapter' : spec.hint,
-              group: CLASS_NAME[cls],
-              disabled: used.has(cls) || noWards,
-            });
-          }
-        }
-        if (this.has(id, 'mage')) {
-          for (const [key, label] of Object.entries(CALLS)) out.push({ label: label.split(':')[0]!, cmd: `call ${key}`, tone: 'info', hint: `free: tell the crew "${label}"`, group: 'call out (free)' });
-        }
-        if (this.phase === 'boss') {
-          const free = (this.classes.get(id) ?? []).some((cl) => !used.has(cl));
-          out.push({ label: `Speak to ${this.wyrmName}`, cmd: 'speak ', input: true, tone: 'talk', hint: `instead of a move · it ${this.breed.temperament}`, group: 'or', disabled: !free });
-        }
-        return out;
-      }
+      case 'boss':
+        return [{ label: 'Battle unfolding…', cmd: 'watch', tone: 'info', hint: 'your Joes are using the most efficient strategy for their chosen relics', group: 'automatic battle', disabled: true }];
       default:
         return [];
     }
@@ -489,6 +530,11 @@ export class Game {
     if (cmd === 'help') return this.help(p);
     if (cmd === 'boons') return p.send([...this.boons].map((b) => `  ${c.magenta(BOONS[b]!.name)} ${c.dim(BOONS[b]!.desc)}`).join('\n') || c.dim('no boons yet.'));
     if (cmd === 'party' || cmd === 'crew') return p.send([...this.players.values()].map((q) => `  ${q.handle.padEnd(14)} ${(this.classes.get(q.id) ?? []).map((cl) => CLASS_NAME[cl]).join(' + ')}`).join('\n'));
+    if (this.waitingForReady) {
+      if ((this.phase === 'combat' || this.phase === 'boss') && cmd === 'equip') return this.equip(p, rest[0]);
+      if (cmd === 'ready') return this.ready(p);
+      return p.feed({ kind: 'tip', text: this.phase === 'combat' || this.phase === 'boss' ? 'Choose your relics, then lock your loadout.' : 'Read the briefing, then choose Ready. The challenge will wait for the whole crew.' });
+    }
 
     switch (this.phase) {
       case 'choice':
@@ -503,10 +549,7 @@ export class Game {
         break;
       case 'combat':
       case 'boss':
-        if (cmd === 'call') return this.call(p, rest[0]);
-        if (cmd === 'speak') return void this.bossSpeak(p, arg);
-        if (cmd in MOVES) return this.act(p, cmd as Move);
-        break;
+        return p.feed({ kind: 'tip', text: 'The crew is fighting automatically. Your preparation decided what they can do.' });
     }
     return this.chat(p, line);
   }
@@ -517,8 +560,8 @@ export class Game {
       choice: 'vote for an option. most votes wins; ties are settled by fate.',
       puzzle: 'the Mage sees the glyph order and shows it; the Rogue presses the glyphs in order. three mistakes trip the alarm.',
       parley: 'speak <words>. win them over before your lines run out. ' + (this.parley ? `${this.parley.ctx.name} ${this.parley.ctx.temperament}` : ''),
-      combat: 'only the Mage sees the foe’s next move: they call it out. Ward blocks attacks (limited), Hex breaks charges and makes the Rogue hit double, Bolt pierces shells, Mend heals.',
-      boss: 'as in any fight, but anyone may speak <words> to the wyrm instead of a move. it ' + this.breed.temperament,
+      combat: 'choose one relic for each role you carry, then lock the loadout. The crew reads the foe and performs the strongest strategy automatically.',
+      boss: 'choose the relics you trust. The crew will fight automatically; stronger and better-matched equipment changes the outcome.',
       ended: '',
     };
     p.feed({ kind: 'tip', text: lines[this.phase] });
@@ -564,6 +607,7 @@ export class Game {
     for (const line of node.lines) {
       const words = text(line.text, ctx);
       if (line.who === 'narrator') this.say('', words, { type: 'narrator' });
+      else if (line.who === 'echo') this.say('ECHO', words, { type: 'narrator' });
       else if (line.who === 'wyrm') this.say(this.wyrmName, words, { type: 'npc', id: 'wyrm' });
       else this.say(NPC_NAME[line.npc ?? ''] ?? line.npc ?? '', words, { type: 'npc', id: line.npc ?? '' });
     }
@@ -575,7 +619,7 @@ export class Game {
       case 'fight':
         return this.startFight(FOES[step.foe]!, !!step.elite, false, step.next, step.win);
       case 'boss':
-        return this.startFight({ ...WYRM_FOE, name: this.wyrmName }, false, true, step.next);
+        return this.startFight(step.foe ? FOES[step.foe]! : { ...WYRM_FOE, name: this.wyrmName }, false, true, step.next);
       case 'puzzle':
         return this.startPuzzle(step.length, step.success, step.failure);
       case 'parley':
@@ -616,6 +660,16 @@ export class Game {
       this.emit({ kind: 'boon', name: b.name });
       this.notice(`✦ ${b.name}: ${b.desc}`, 'good');
     }
+    if (e.items) for (const id of e.items) {
+      const item = itemById(id);
+      if (!item || this.foundItems.has(id)) continue;
+      this.foundItems.add(id);
+      for (const p of this.players.values()) {
+        const owned = this.opts.inventory?.[p.id];
+        if (owned && !owned.includes(id)) owned.push(id);
+      }
+      this.notice(`RELIC HARVESTED · ${item.icon} ${item.name} · power ${item.power}`, 'good');
+    }
     if (e.meter) this.addMeter(e.meter);
   }
 
@@ -644,12 +698,12 @@ export class Game {
     this.votes.clear();
     this.options = step.options.filter((o) => (!o.requires || this.flags.has(o.requires)) && (!o.forbids || !this.flags.has(o.forbids)));
     this.log(c.bold(text(step.prompt, this.ctx())) + '\n' + this.options.map((o, i) => `  ${i + 1}. ${text(o.label, this.ctx())} ${c.dim(`· ${text(o.detail, this.ctx())}`)}`).join('\n'));
-    this.startTimer(this.story.practice ? 0 : (this.opts.voteMs ?? 40_000), () => this.resolveVote());
     this.refresh();
   }
 
   private vote(p: GamePlayer, n: number) {
     if (!this.options[n - 1]) return p.send(c.dim(`vote 1 to ${this.options.length}`));
+    if (!this.votes.size) this.startTimer(this.story.practice ? 0 : (this.opts.voteMs ?? 40_000), () => this.resolveVote());
     this.votes.set(p.id, n - 1);
     this.emit({ kind: 'vote', by: p.handle });
     this.refresh();
@@ -677,6 +731,8 @@ export class Game {
     const len = Math.max(2, length - (this.boons.has('core') ? 1 : 0));
     const sequence = this.rng.shuffle(GLYPHS).slice(0, len);
     this.phase = 'puzzle';
+    this.encounterReady.clear();
+    this.waitingForReady = !this.story.practice;
     this.shownGlyph = -1;
     this.puzzle = { sequence, progress: 0, misses: 0, success, failure };
     for (const p of this.players.values()) {
@@ -724,6 +780,7 @@ export class Game {
       this.award(p.id, WARDEN.showGlyph, 'clear signal', undefined, true);
     }
     this.chat(p, `${GLYPH_CHAR[g]} ${g.toUpperCase()}`);
+    this.refresh();
   }
 
   // ---------------------------------------------------------------- conversations
@@ -736,6 +793,8 @@ export class Game {
 
   private startParley(npc: string, goal: number, lines: number, success: string, failure: string) {
     this.phase = 'parley';
+    this.encounterReady.clear();
+    this.waitingForReady = !this.story.practice;
     this.parley = { npc, ctx: this.npcContext(npc), goal, progress: 0, linesLeft: lines, history: [], busy: false, success, failure };
     this.feedAll({ kind: 'tip', text: `${this.parley.ctx.name} ${this.parley.ctx.temperament}. Win them over in ${lines} lines; anyone can speak.` });
     this.refresh();
@@ -800,12 +859,18 @@ export class Game {
 
   private startFight(spec: FoeSpec, elite: boolean, boss: boolean, next: string, win?: Effects) {
     const n = this.players.size;
-    const scale = (n >= 4 ? 1.25 : n === 1 ? 0.8 : 1) * NUM.foeHp;
+    const difficulty = this.opts.difficulty ?? (this.story.difficulty ?? 1);
+    const pressure = chapterDifficulty(this.node().chapter, this.story.chapters);
+    // Pressure is the visible overall threat rating. Split it between endurance
+    // and damage so 5× difficulty stays demanding without becoming a one-hit wall.
+    const hpPressure = 1 + (pressure - 1) * 0.14;
+    const damagePressure = 1 + (pressure - 1) * 0.045;
+    const scale = (n >= 4 ? 1.25 : n === 1 ? 0.8 : 1) * NUM.foeHp * difficulty * hpPressure;
     let hp = spec.hp * scale * (elite ? 1.4 : 1);
     if (boss && this.flags.has('sealed')) hp *= 0.7;
     hp = Math.round(hp);
     const name = elite ? `Dread ${spec.name}` : spec.name;
-    this.foe = { spec, name, hp, maxHp: hp, intent: this.pickIntent(spec), exposed: boss && this.boons.has('oracle'), enraged: 0, elite, boss, dmgMult: NUM.foeDmg * (this.story.difficulty ?? 1) * (elite ? 1.25 : 1), next, ...(win ? { win } : {}) };
+    this.foe = { spec, name, hp, maxHp: hp, intent: this.pickIntent(spec), exposed: boss && this.boons.has('oracle'), enraged: 0, elite, boss, dmgMult: NUM.foeDmg * difficulty * damagePressure * (elite ? 1.25 : 1), next, ...(win ? { win } : {}) };
     this.phase = boss ? 'boss' : 'combat';
     this.round = 1;
     this.queued = [];
@@ -814,13 +879,90 @@ export class Game {
     this.bossParley = [];
     this.bossTalk = {};
     this.lastFoeMove = undefined;
+    this.encounterReady.clear();
+    this.loadouts.clear();
+    this.waitingForReady = true;
     this.say('', spec.intro, { type: 'narrator' });
-    if (this.chapter <= 2 && !boss && !this.story.practice) {
-      const secs = Math.round((this.opts.roundMs ?? NUM.roundMs) / 1000);
-      this.feedAll({ kind: 'tip', text: `Only the Mage can see what it will do next: call it out. Everyone picks a move before the ${secs}s timer runs out, or the crew is caught flat-footed.` });
-    }
-    if (boss) this.feedAll({ kind: 'tip', text: `It ${this.breed.temperament}. Anyone can speak to it instead of using a move.` });
+    this.feedAll({ kind: 'tip', text: `THREAT ${pressure.toFixed(1)}× · Choose a relic for each role you carry, then lock your loadout. Once every Joe is ready, the crew will fight with the strongest strategy available.` });
     this.announceRound();
+  }
+
+  private equip(p: GamePlayer, id?: string) {
+    if (!id || this.encounterReady.has(p.id)) return;
+    const item = itemById(id);
+    const owned = this.opts.inventory?.[p.id] ?? [];
+    const kinds = new Set((this.classes.get(p.id) ?? []).map((cls) => CLASS_ITEM[cls]));
+    if (!item || !owned.includes(item.id) || !kinds.has(item.kind)) return p.feed({ kind: 'tip', text: 'That relic is not available to this Joe.' });
+    const loadout = this.loadouts.get(p.id) ?? new Map<ItemKind, string>();
+    loadout.set(item.kind, item.id);
+    this.loadouts.set(p.id, loadout);
+    this.notice(`${p.handle} prepares ${item.icon} ${item.name}.`, 'info');
+    this.refresh();
+  }
+
+  private strongestOwned(id: string, kind: ItemKind) {
+    const owned = new Set(this.opts.inventory?.[id] ?? []);
+    return ITEMS.filter((item) => item.kind === kind && owned.has(item.id)).sort((a, b) => b.power - a.power)[0];
+  }
+
+  private ready(p: GamePlayer) {
+    if (this.phase === 'combat' || this.phase === 'boss') {
+      const loadout = this.loadouts.get(p.id) ?? new Map<ItemKind, string>();
+      for (const cls of this.classes.get(p.id) ?? []) {
+        const kind = CLASS_ITEM[cls];
+        const best = this.strongestOwned(p.id, kind);
+        if (!loadout.has(kind) && best) loadout.set(kind, best.id);
+      }
+      this.loadouts.set(p.id, loadout);
+    }
+    this.encounterReady.add(p.id);
+    this.log(c.dim(`   ${p.handle} is ready`));
+    this.refresh();
+    if (this.encounterReady.size >= this.players.size) {
+      this.waitingForReady = false;
+      this.notice(this.phase === 'combat' || this.phase === 'boss' ? 'Loadouts locked. The crew moves as one.' : 'Crew ready. Begin.', 'good');
+      this.refresh();
+      if (this.phase === 'combat' || this.phase === 'boss') this.scheduleAutoRound(650);
+    }
+  }
+
+  private scheduleAutoRound(delay = 1250) {
+    if (this.phase !== 'combat' && this.phase !== 'boss') return;
+    if (this.opts.roundMs === 0) return this.autoRound();
+    if (this.autoTimer) clearTimeout(this.autoTimer);
+    this.autoTimer = setTimeout(() => this.autoRound(), delay);
+  }
+
+  /** Read the threat and queue the most efficient move for every role. */
+  private autoRound() {
+    const f = this.foe;
+    if (!f || (this.phase !== 'combat' && this.phase !== 'boss')) return;
+    this.autoTimer = undefined;
+    const intent = f.intent.kind;
+    const willHex = intent === 'charge' || intent !== 'shell';
+    this.queued = [];
+    this.acted.clear();
+    const mage = [...this.players.values()].find((p) => this.has(p.id, 'mage'));
+    if (mage) {
+      const called = intent === 'heavy' ? 'attack' : intent;
+      this.called = { by: mage.handle, label: CALLS[called] ?? intent.toUpperCase() };
+      this.firstCall = called;
+    }
+    for (const p of this.players.values()) {
+      const used = new Set<ClassId>();
+      for (const cls of this.classes.get(p.id) ?? []) {
+        let move: Move;
+        if (cls === 'cleric') {
+          move = (intent === 'attack' || intent === 'heavy') && this.wardsLeft() > 0 ? 'ward' : 'mend';
+          if (move === 'ward') this.wardsUsed++;
+        } else if (cls === 'mage') move = intent === 'shell' ? 'bolt' : willHex ? 'hex' : 'bolt';
+        else move = willHex && this.meter < 65 ? 'fury' : 'strike';
+        used.add(cls);
+        this.queued.push({ player: p.id, cls, move, at: Date.now() });
+      }
+      this.acted.set(p.id, used);
+    }
+    this.resolve();
   }
 
   private announceRound() {
@@ -830,25 +972,22 @@ export class Game {
       if (this.has(p.id, 'mage')) p.send(c.cyan(`   you see its next move: ${intentOf(f.intent).label} (${intentOf(f.intent).hint})`));
     }
     if (this.story.practice) this.coach(f);
-    const ms = this.story.practice ? 0 : (this.opts.roundMs ?? (f.boss ? NUM.bossRoundMs : NUM.roundMs));
-    this.startTimer(ms, () => this.forceResolve());
-    this.roundStarted = Date.now();
+    this.roundStarted = 0;
     this.firstCall = undefined;
     this.refresh();
   }
 
-  /** Tutorial: say exactly which keys answer what the construct is about to do. */
+  /** Tutorial: explain the tactic the crew is about to perform. */
   private coach(f: FoeState) {
     const tips: Record<string, string> = {
-      attack: 'Its badge says ATTACK. Cleric: press D to Ward and block it. Rogue: press A to Strike. Mage: press W to Bolt (or Q to Hex).',
-      charge: 'It is CHARGING a huge hit for next round. Mage: press Q to Hex: it breaks the charge, and makes this round’s Strike (A) hit double. Cleric: keep your Ward, press F to Mend.',
-      heavy: 'The big hit is coming NOW. Cleric: press D to Ward it.',
-      shell: 'It raises a SHELL: Strikes and Fury do half. Mage: press W, Bolt pierces shells. Cleric: F to Mend.',
-      wail: 'It will WAIL: no Ward can stop it. Cleric: press F to Mend. Rogue and Mage: hit it while you can (A, W).',
+      attack: 'The Cleric steps forward to Ward while the Rogue and Mage strike from cover.',
+      charge: 'The Mage breaks the charge with a Hex, opening a path for the Rogue.',
+      heavy: 'The Cleric braces the whole crew against the incoming heavy blow.',
+      shell: 'The Mage circles wide and sends a Bolt through the shell while the others reposition.',
+      wail: 'The Cleric restores the crew while the Rogue and Mage press the opening.',
     };
     const tip = tips[f.intent.kind];
-    const calls = this.round === 1 ? ' As the Mage you can also press 1-5 to call out what it will do; in a real crew that is how everyone else finds out.' : '';
-    if (tip) this.feedAll({ kind: 'tip', text: tip + calls });
+    if (tip) this.feedAll({ kind: 'tip', text: tip });
   }
 
   private isReady(id: string) {
@@ -860,6 +999,7 @@ export class Game {
     if (!this.has(p.id, 'mage')) return p.feed({ kind: 'tip', text: 'Only the Mage can see what it will do.' });
     const label = key ? CALLS[key] : undefined;
     if (!label) return p.send(c.dim(`call ${Object.keys(CALLS).join(' | ')}`));
+    this.ensureRoundTimer();
     this.called = { by: p.handle, label };
     this.firstCall ??= key;
     this.chat(p, `📣 ${label}`);
@@ -871,6 +1011,7 @@ export class Game {
     if (!this.has(p.id, cls)) return p.feed({ kind: 'tip', text: `${MOVES[move].label} is the ${CLASS_NAME[cls]}'s move.` });
     const used = this.acted.get(p.id) ?? new Set<ClassId>();
     if (used.has(cls)) return p.feed({ kind: 'tip', text: `Your ${CLASS_NAME[cls]} already acted this round.` });
+    this.ensureRoundTimer();
     if (move === 'ward') {
       if (this.wardsLeft() === 0) return p.feed({ kind: 'tip', text: 'No Wards left this chapter. Mend instead.' });
       this.wardsUsed++;
@@ -889,6 +1030,7 @@ export class Game {
     const used = this.acted.get(p.id) ?? new Set<ClassId>();
     const cls = (this.classes.get(p.id) ?? []).find((cl) => !used.has(cl));
     if (!cls) return p.feed({ kind: 'tip', text: 'You already acted this round.' });
+    this.ensureRoundTimer();
     used.add(cls);
     this.acted.set(p.id, used);
     this.pendingSpeech++;
@@ -919,6 +1061,15 @@ export class Game {
     if ([...this.players.keys()].every((id) => this.isReady(id))) this.resolve();
   }
 
+  /** Reading time is free; the countdown begins with the crew's first move. */
+  private ensureRoundTimer() {
+    if (this.roundStarted) return;
+    this.roundStarted = Date.now();
+    const f = this.foe;
+    const ms = this.story.practice ? 0 : (this.opts.roundMs ?? (f?.boss ? NUM.bossRoundMs : NUM.roundMs));
+    this.startTimer(ms, () => this.forceResolve());
+  }
+
   private forceResolve() {
     if (this.phase !== 'combat' && this.phase !== 'boss') return;
     if (this.pendingSpeech > 0) this.resolveWhenSpoken = true;
@@ -935,6 +1086,11 @@ export class Game {
     const queue = [...this.queued].sort((a, b) => ORDER.indexOf(a.move) - ORDER.indexOf(b.move));
     let warded = false;
     let hexed = false;
+    const itemBonus = (id: string, kind: ItemKind) => {
+      const item = itemById(this.loadouts.get(id)?.get(kind) ?? '');
+      return item?.kind === kind ? item.power * 2 : 0;
+    };
+    const shield = Math.max(0, ...[...this.players.keys()].map((id) => itemBonus(id, 'defense')));
 
     // Anyone still undecided at the buzzer leaves the crew open.
     const idle = [...this.players.keys()].filter((id) => !this.isReady(id));
@@ -958,7 +1114,8 @@ export class Game {
     if (mageId && this.firstCall && (this.firstCall === intent || (this.firstCall === 'attack' && intent === 'heavy'))) this.award(mageId, WARDEN.goodCall, 'called it', 'goodCalls');
 
     const hit = (q: Queued, who: string, move: Move, base: number, opts: { doubles?: boolean; pierces?: boolean } = {}) => {
-      let dmg = base;
+      const kind: ItemKind | undefined = move === 'strike' || move === 'fury' ? 'attack' : move === 'hex' || move === 'bolt' ? 'magic' : undefined;
+      let dmg = base + (kind ? itemBonus(q.player, kind) : 0);
       const doubled = !!opts.doubles && f.exposed;
       const blunt = shelled && !opts.pierces;
       if (doubled) dmg *= NUM.exposedMult;
@@ -1041,7 +1198,7 @@ export class Game {
     if (this.round === 1 && this.boons.has('disguise')) mult *= 0.5;
     if (idle.length) mult *= NUM.flatFootedMult;
     this.lastFoeMove = it.kind;
-    const amount = Math.round((it.amount + f.enraged) * mult);
+    const amount = Math.max(0, Math.round((it.amount + f.enraged) * mult) - shield);
     switch (it.kind) {
       case 'attack':
       case 'heavy':
@@ -1088,11 +1245,14 @@ export class Game {
     this.acted.clear();
     this.called = undefined;
     this.announceRound();
+    this.scheduleAutoRound();
   }
 
   private winFight() {
     const f = this.foe!;
     this.clearTimer();
+    if (this.autoTimer) clearTimeout(this.autoTimer);
+    this.autoTimer = undefined;
     this.emit({ kind: 'slay', boss: f.boss });
     this.notice(`${f.name} is destroyed.`, 'good');
     for (const id of this.players.keys()) this.award(id, WARDEN.slay + (f.boss ? WARDEN.slay : 0), f.boss ? 'the wyrm falls' : 'monster down', undefined, true);
@@ -1108,15 +1268,25 @@ export class Game {
     const leaving = this.players.get(id);
     this.players.delete(id);
     this.classes.delete(id);
+    this.encounterReady.delete(id);
     this.votes.delete(id);
     this.acted.delete(id);
     this.queued = this.queued.filter((q) => q.player !== id);
-    if (this.phase === 'ended' || this.players.size === 0) return;
+    if (this.players.size === 0) {
+      if (this.autoTimer) clearTimeout(this.autoTimer);
+      this.autoTimer = undefined;
+      return;
+    }
+    if (this.phase === 'ended') return;
     for (const cls of orphaned) {
       if ([...this.classes.values()].some((cl) => cl.includes(cls))) continue;
       const heir = [...this.players.values()].sort((a, b) => (this.classes.get(a.id)?.length ?? 0) - (this.classes.get(b.id)?.length ?? 0))[0]!;
       this.classes.get(heir.id)!.push(cls);
       this.notice(`${leaving?.handle ?? 'someone'} faded. ${heir.handle} takes up the ${CLASS_NAME[cls]}.`);
+    }
+    if (this.waitingForReady && this.encounterReady.size >= this.players.size) {
+      this.waitingForReady = false;
+      if (this.phase === 'combat' || this.phase === 'boss') this.scheduleAutoRound(400);
     }
     this.refresh();
     if (this.phase === 'choice' && this.votes.size >= this.players.size) this.resolveVote();
@@ -1142,6 +1312,8 @@ export class Game {
     if (this.phase === 'ended') return;
     this.phase = 'ended';
     this.clearTimer();
+    if (this.autoTimer) clearTimeout(this.autoTimer);
+    this.autoTimer = undefined;
     this.foe = undefined;
     this.ending = { title, text: ending, win };
     this.emit({ kind: 'end', win });
@@ -1156,5 +1328,6 @@ export class Game {
 
   dispose() {
     this.clearTimer();
+    if (this.autoTimer) clearTimeout(this.autoTimer);
   }
 }

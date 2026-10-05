@@ -7,6 +7,7 @@ import { ScriptedJudge } from '../src/server/game/parley.js';
 import { Hub } from '../src/server/hub.js';
 import { FakePlayer, fixedJudge, playGame } from './bot.js';
 import { FakeSession } from './session.js';
+import { messageChunks } from '../src/client/console.js';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -20,20 +21,28 @@ function intoFight(roundMs = 0) {
   return { game, players, by };
 }
 
-test('the monster attacks when the timer runs out, and idle players cost the crew', async () => {
-  const { game, players, by } = intoFight(60);
-  assert.ok(players[0]!.scene!.timer, 'a ticking timer is shown');
-  game.handle(by('rogue').id, 'strike');
-  const before = game.meter;
-  await wait(120);
-  assert.equal(game.round, 2, 'the round resolved without waiting for everyone');
-  assert.ok(game.meter >= before + NUM.flatFooted * 2, 'two undecided players: flat-footed damage');
-  const score = (h: string) => players.find((p) => p.handle === h)!.scene!.scores!.find((s) => s.handle === h)!.points;
-  assert.ok(score(by('mage').handle) < 0 && score(by('cleric').handle) < 0, 'the Warden docks the idle');
+test('the automatic battle waits for every loadout, then moves the whole crew', () => {
+  const { game, players } = intoFight(0);
+  assert.equal(players[0]!.scene!.timer, undefined, 'reading time is free');
+  assert.equal(players[0]!.scene!.waitingForReady, true);
+  game.handle(players[0]!.id, 'ready');
+  game.handle(players[1]!.id, 'ready');
+  assert.equal(players[0]!.scene!.waitingForReady, true, 'one Joe still has all the time they need');
+  game.handle(players[2]!.id, 'ready');
+  assert.ok(players.every((p) => p.fxs.some((fx) => fx.kind === 'act')), 'all Joes move once preparation is locked');
+  assert.ok(players.every((p) => !p.fxs.some((fx) => fx.kind === 'score' && fx.reason === 'caught flat-footed')));
   game.dispose();
 });
 
-test('the Warden rewards answering the threat: a ward against an attack', () => {
+test('coordinator messages are split into readable chunks', () => {
+  const chunks = messageChunks('The city is in danger. Reach the bridge, find the Oracle, and carry the last seal before the second eye opens.');
+  assert.deepEqual(chunks, ['The city is in danger.', 'Reach the bridge, find the Oracle, and carry the last seal before the second eye opens.']);
+  assert.ok(chunks.every((line) => line.length <= 96));
+  assert.deepEqual(messageChunks('"Watch the monster. Then answer it."'), ['Watch the monster.', 'Then answer it.']);
+  assert.ok(!messageChunks('"A final line."').includes('"'));
+});
+
+test('the automatic strategy answers an attack with a Ward and coordinated offense', () => {
   for (let seed = 1; seed < 40; seed++) {
     const players = ['neo', 'trinity', 'cy'].map((h, i) => new FakePlayer(`p${i}`, h));
     const game = new Game(players, { judge: fixedJudge(0), story: 'adventure', seed, roundMs: 0, voteMs: 0, onEnd: () => {} });
@@ -42,13 +51,10 @@ test('the Warden rewards answering the threat: a ward against an attack', () => 
     if (mage.scene!.foe!.intent!.kind !== 'attack') continue;
     const cleric = players.find((p) => game.classes.get(p.id)!.includes('cleric'))!;
     const rogue = players.find((p) => game.classes.get(p.id)!.includes('rogue'))!;
-    game.handle(mage.id, 'call attack');
-    game.handle(cleric.id, 'ward');
-    game.handle(mage.id, 'hex');
-    game.handle(rogue.id, 'strike');
+    for (const p of players) game.handle(p.id, 'ready');
     const fx = cleric.fxs.filter((f) => f.kind === 'score');
     assert.ok(fx.some((f) => f.kind === 'score' && f.reason === 'clean ward' && f.points === WARDEN.cleanWard));
-    assert.ok(rogue.fxs.some((f) => f.kind === 'score' && f.reason === 'double strike'));
+    assert.ok(rogue.fxs.some((f) => f.kind === 'score' && f.reason.startsWith('double')));
     assert.ok(mage.scene!.scores!.find((s) => s.handle === mage.handle)!.points >= WARDEN.goodCall);
     return;
   }
@@ -113,11 +119,7 @@ test('real stories need two players; the tutorial is solo and walks every lesson
   assert.ok(!scene().timer, 'no timers in practice');
   hub.handleLine('a', 'vote 1');
   assert.equal(scene().view, 'combat');
-  // the construct shows its moves in a fixed order; answer each one
-  const answer: Record<string, string[]> = { attack: ['ward', 'strike', 'bolt'], charge: ['hex', 'strike', 'mend'], heavy: ['ward', 'strike', 'bolt'], shell: ['bolt', 'strike', 'mend'], wail: ['mend', 'strike', 'bolt'] };
-  for (let i = 0; i < 20 && scene().view === 'combat'; i++) {
-    for (const m of answer[scene().foe!.intent!.kind]!) hub.handleLine('a', m);
-  }
+  hub.handleLine('a', 'ready');
   assert.equal(scene().view, 'puzzle');
   for (const g of scene().puzzle!.sequence!) hub.handleLine('a', `glyph ${g}`);
   assert.equal(scene().view, 'parley');

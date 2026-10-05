@@ -225,7 +225,8 @@ export class Sound {
     };
     switch (name) {
       case 'click':
-        this.tone({ freq: jit(1700, 0.1), dur: 0.03, vol: 0.05 });
+        this.tone({ type: 'triangle', freq: jit(420, 0.04), to: jit(560, 0.04), dur: 0.09, vol: 0.055, attack: 0.012 });
+        this.tone({ type: 'sine', freq: jit(210, 0.03), dur: 0.11, vol: 0.025, attack: 0.008 });
         break;
       case 'vote':
         this.tone({ type: 'triangle', freq: jit(660), to: jit(990), dur: 0.12, vol: 0.1 });
@@ -339,11 +340,16 @@ export class Sound {
 // Semitones from A4. Each piece is a two- or four-bar loop with its own feel.
 const PIECES: Record<Mood, Piece> = {
   lobby: {
-    bpm: 70, level: 0.5,
+    bpm: 54, level: 0.48,
     step(s, t, b, at, e) {
-      const chords = [[-12, -8, -5, -1], [-15, -12, -8, -3], [-17, -13, -10, -5], [-14, -10, -7, -2]];
-      if (b % 16 === 0) s.pad(t, chords[(b / 16) % 4]!, at, e * 16, 0.025);
-      if (b % 4 === 2 && Math.random() < 0.6) s.bell(t, chords[Math.floor(b / 16) % 4]![Math.floor(Math.random() * 4)]! + 12, at, 0.035);
+      const roots = [-31, -30, -34, -31];
+      const root = roots[Math.floor(b / 16) % roots.length]!;
+      if (b % 16 === 0) {
+        s.pad(t, [root + 12, root + 18, root + 19], at, e * 20, 0.018, 'sawtooth');
+        s.tone({ type: 'sine', freq: note(root), dur: e * 24, vol: .045, at, attack: 2, dest: t.gain });
+      }
+      if (b % 8 === 5 && Math.random() < .55) s.bell(t, root + 30 + Math.floor(Math.random() * 3), at, .018);
+      if (b % 16 === 12) s.noise({ dur: e * 6, vol: .018, at, filter: 'bandpass', freq: 420, to: 1100, q: 5, dest: t.gain });
     },
   },
   story: {

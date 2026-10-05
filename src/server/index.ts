@@ -110,6 +110,8 @@ wss.on('connection', (ws: WebSocket) => {
     } catch {
       return;
     }
+    if (msg?.type === 'hello') return hub.identify(session.id, msg.name, msg.inventory);
+    if (msg?.type === 'inventory') return hub.updateInventory(session.id, msg.inventory);
     if (msg?.type === 'resume') return hub.resume(session.id, msg.checkpoint);
     if (msg?.type !== 'line' || typeof msg.text !== 'string') return;
     // Strip control characters so players can't inject ANSI into each other's terminals.

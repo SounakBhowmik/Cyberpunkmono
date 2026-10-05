@@ -19,8 +19,9 @@
     <main class="rig">
       <header>
         <span class="logo">LAST LIGHT</span>
-        <span class="hint">a co-op story for 2-4 players</span>
+        <span class="hint">a story adventure · solo or crew</span>
         <button id="menu-btn" class="sound-toggle" type="button">☰ menu</button>
+        <button id="map-btn" class="sound-toggle" type="button" hidden>⌖ map</button>
         <button id="log" class="sound-toggle" type="button" aria-pressed="false">⌨ log</button>
         <button id="sound" class="sound-toggle" type="button" aria-pressed="true">♪ on</button>
       </header>
@@ -43,6 +44,7 @@
     </aside>
 
     <div id="menu" role="dialog" aria-label="main menu"></div>
+    <div id="world-map" role="dialog" aria-modal="true" aria-label="world map" hidden></div>
     <div id="results" role="dialog" aria-label="story results" hidden></div>
     <div id="rotate"><div><span class="phone">📱</span><b>Turn your phone sideways</b><small>LAST LIGHT plays in landscape.</small></div></div>
     <script type="module" src="app.js"></script>

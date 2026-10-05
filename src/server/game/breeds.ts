@@ -24,8 +24,8 @@ const count = (re: RegExp, text: string) => (text.match(re) ?? []).length;
 export const BREEDS: Record<WyrmColor, Breed> = {
   red: {
     id: 'red',
-    title: 'Red Wyrm',
-    names: ['PYRRHAX.exe', 'EMBERCROWN', 'SCORCH-SOVEREIGN'],
+    title: 'Cinder Tyrant',
+    names: ['Varkesh', 'Ashkarion', 'Pyravel'],
     temperament: 'craves worship: flatter it, never insult it',
     boast: 'I am owed worship.',
     persona: 'You are vain, theatrical and quick to anger. You speak like a tyrant king. Flattery and reverence soften you. Insults, impatience or treating you like a mere program enrage you.',
@@ -36,8 +36,8 @@ export const BREEDS: Record<WyrmColor, Breed> = {
   },
   blue: {
     id: 'blue',
-    title: 'Blue Wyrm',
-    names: ['AZURE AUDITOR', 'LEDGERWYRM', 'CERULEAN-CLERK'],
+    title: 'Drowned Arbiter',
+    names: ['Caelorith', 'Velisar', 'Ordrune'],
     temperament: 'loves procedure: be formal, cite rules and requests',
     boast: 'I respect only proper procedure.',
     persona: 'You are an exacting bureaucrat. You demand reference numbers, authorizing officers and proper phrasing. Formal procedural language pleases you; slang and casualness offend you. You never open without the maintenance ticket being cited.',
@@ -48,8 +48,8 @@ export const BREEDS: Record<WyrmColor, Breed> = {
   },
   green: {
     id: 'green',
-    title: 'Green Wyrm',
-    names: ['VERDIGRIS', 'THE SMILING MOSS', 'JADE WHISPER'],
+    title: 'Briar Bargainer',
+    names: ['Sylvara', 'Mirevane', 'Thaloss'],
     temperament: 'loves bargains: offer it deals and secrets',
     boast: 'Everything I own, I bargained for.',
     persona: 'You are charming, sly and greedy. You love bargains, gossip and secrets, and you lie casually. You try to sow distrust inside the crew. Offers, trades and juicy secrets soften you; you are unmoved by flattery.',
@@ -58,8 +58,8 @@ export const BREEDS: Record<WyrmColor, Breed> = {
   },
   black: {
     id: 'black',
-    title: 'Black Wyrm',
-    names: ['NOCTURNE-0', 'GRUDGEMAW', 'THE INK THAT REMEMBERS'],
+    title: 'Grave-Archive',
+    names: ['Nhalor', 'Morvane', 'Veyr Noctis'],
     temperament: 'holds grudges: be sincere, apologize',
     boast: 'I forget nothing, and I forgive less.',
     persona: 'You are paranoid and spiteful. You keep a list of everyone who has wronged you. Questions make you suspicious. Sincere apologies help a little. You never fully trust anyone and you calm down very slowly.',
@@ -68,8 +68,8 @@ export const BREEDS: Record<WyrmColor, Breed> = {
   },
   white: {
     id: 'white',
-    title: 'White Wyrm',
-    names: ['RIMEFANG', 'IDLE FROST', 'GLACIER.SYS'],
+    title: 'Pale Sleeper',
+    names: ['Ilyrime', 'Vaelith', 'Seraphel'],
     temperament: 'likes things dull: talk long and boring',
     boast: 'Everything bores me.',
     persona: 'You are cold, lazy and bored of everything. You want visitors to go away with minimum effort. Long, tedious, routine explanations make you wave them through just to end the conversation. Short, urgent or exciting messages make you alert and suspicious.',

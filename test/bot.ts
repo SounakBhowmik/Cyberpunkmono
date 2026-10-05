@@ -1,6 +1,7 @@
 // A bot crew that plays LAST LIGHT through the real Game API. Used by the
 // tests (to walk every story) and by the balance simulator.
 import type { ActionButton, Checkpoint, FeedItem, Fx, HudState, ModeId, SceneState } from '../src/shared/protocol.js';
+import { ITEMS } from '../src/shared/items.js';
 import { Game, type GamePlayer, type GameResult } from '../src/server/game/game.js';
 import type { ParleyJudge } from '../src/server/game/parley.js';
 
@@ -53,6 +54,8 @@ export interface RunOpts {
   /** Choice picker: index into the options offered. Defaults to random. */
   choose?: (labels: string[], game: Game) => number;
   random?: () => number;
+  /** Defaults to a prepared crew so full-campaign tests validate strategy, not progression storage. */
+  inventory?: string[];
 }
 
 export async function playGame(o: RunOpts) {
@@ -60,12 +63,17 @@ export async function playGame(o: RunOpts) {
   const rand = o.random ?? Math.random;
   const players = Array.from({ length: crew }, (_, i) => new FakePlayer(`p${i}`, ['neo', 'trinity', 'cy', 'orbit'][i]!));
   let result: GameResult | undefined;
-  const game = new Game(players, { judge: o.judge ?? fixedJudge(6), story: o.story, seed: o.seed ?? 1, roundMs: 0, voteMs: 0, onEnd: (r) => (result = r) });
+  const gear = o.inventory ?? ITEMS.map((item) => item.id);
+  const game = new Game(players, { judge: o.judge ?? fixedJudge(6), story: o.story, seed: o.seed ?? 1, roundMs: 0, voteMs: 0, inventory: Object.fromEntries(players.map((p) => [p.id, [...gear]])), onEnd: (r) => (result = r) });
   const policy = o.policy ?? 'smart';
   const pick = <T,>(xs: T[]) => xs[Math.floor(rand() * xs.length)]!;
   const holders = (cls: string) => players.filter((p) => game.classes.get(p.id)?.includes(cls as never));
 
   for (let guard = 0; !result && guard < 600; guard++) {
+    if (players[0]!.scene?.waitingForReady) {
+      for (const p of players) game.handle(p.id, 'ready');
+      continue;
+    }
     switch (game.phase) {
       case 'choice': {
         const labels = players[0]!.scene!.choice!.options.map((x) => x.label);

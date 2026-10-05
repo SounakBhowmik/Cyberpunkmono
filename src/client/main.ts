@@ -1,8 +1,9 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import {
-  MAX_LINE_LENGTH, type ActionButton, type Checkpoint, type ClientMessage, type Fx, type HudMember, type HudState, type ModeId, type RunResult, type SceneState, type ServerMessage,
+  MAX_LINE_LENGTH, type ActionButton, type Checkpoint, type ClassId, type ClientMessage, type Fx, type HudMember, type HudState, type ModeId, type RunResult, type SceneState, type ServerMessage,
 } from '../shared/protocol';
+import { ITEMS } from '../shared/items';
 import { avatarDataUrl, avatarSeed } from './avatar';
 import { GameConsole } from './console';
 import { CONTROLS, MOVE_KEYS, eventKey, keyFor } from './keys';
@@ -12,13 +13,13 @@ import { SceneView } from './scene';
 import { Sound, type Sfx } from './sound';
 
 const STORIES: Record<ModeId, { title: string; pitch: string }> = {
-  adventure: { title: 'The Pilgrimage', pitch: 'carry the seal across the city to the Devourer' },
+  adventure: { title: 'The Last Pilgrimage', pitch: 'carry ECHO’s unfinished seal beneath the city and face the truth of his fallen crew' },
   heist: { title: 'The Heart of the Wyrm', pitch: 'rob a corp tower of the wyrm it keeps chained' },
   survival: { title: 'Four Nights', pitch: 'hold the last lit safehouse until dawn' },
-  tutorial: { title: 'Training', pitch: 'learn the controls, the roles and how to read a monster' },
+  daily: { title: 'The Warden’s Omen', pitch: 'follow today’s shifting omen and harvest a relic' },
+  tutorial: { title: 'Training', pitch: 'learn relic loadouts, crew roles and the journey ahead' },
 };
 const CREW_STORIES: ModeId[] = ['adventure', 'heist', 'survival'];
-const NAME_RE = /^[A-Za-z0-9_-]{2,16}$/;
 
 /** Phones and tablets get the on-screen pad and the slide-in log; desktops get hotkeys and the bottom log. */
 const touch = window.matchMedia('(pointer: coarse)').matches;
@@ -213,14 +214,23 @@ let lastScene: SceneState | undefined;
 let lastActions: ActionButton[] = [];
 let lastHud: HudState | undefined;
 let myHandle = '';
+let storyLocked = false;
+let storySpeaker = '';
 
 const stage = document.querySelector('.stage') as HTMLElement;
 const scene = new SceneView($<HTMLCanvasElement>('scene'), (index) => {
+  if (storyLocked) return;
   sound.play('click');
   run(`vote ${index + 1}`);
 });
 const gameConsole = new GameConsole(stage);
-gameConsole.onLine = (kind) => sound.play(kind === 'npc' ? 'npc' : kind === 'player' ? 'speak' : 'notice');
+gameConsole.onLine = (kind, speaker) => sound.play(kind === 'npc' || speaker === 'ECHO' ? 'npc' : kind === 'player' ? 'speak' : 'notice');
+gameConsole.onAdvance = () => sound.play('click');
+gameConsole.onReadingChange = (reading, speaker = '') => {
+  storyLocked = reading;
+  storySpeaker = speaker;
+  renderActions();
+};
 
 const soundBtn = $<HTMLButtonElement>('sound');
 function renderSoundBtn() {
@@ -275,7 +285,6 @@ function lobbyActions(): ActionButton[] {
       { label: 'create a safehouse', cmd: 'create', tone: 'go' },
       { label: 'join a crew', cmd: 'join ', input: true, tone: 'talk', hint: 'type the 4-letter code' },
       { label: 'training', cmd: 'tutorial', tone: 'magic', hint: 'learn the controls, solo' },
-      { label: 'reroll avatar', cmd: 'reroll', tone: 'magic' },
     ];
   }
   if (h.mode === 'safehouse') {
@@ -287,9 +296,9 @@ function lobbyActions(): ActionButton[] {
         const resuming = h.resume && h.story === id;
         out.push({ label: `${h.story === id ? '✓ ' : ''}${s.title}`, cmd: `mode ${id}`, tone: h.story === id ? 'go' : 'info', hint: resuming ? `resume at chapter ${h.resume!.chapter}` : s.pitch, group: 'story' });
       }
-      out.push({ label: h.resume ? 'resume' : 'begin', cmd: 'start', tone: 'go', disabled: h.party.length < 2, hint: h.party.length < 2 ? 'needs at least 2 players' : 'start the story', group: 'crew' });
+      out.push({ label: h.resume ? 'resume' : 'begin', cmd: 'start', tone: 'go', disabled: h.party.length < 2, hint: h.party.length < 2 ? 'needs at least 2 Joes' : 'start the story', group: 'crew' });
     }
-    out.push({ label: 'reroll avatar', cmd: 'reroll', tone: 'magic', group: 'crew' }, { label: 'leave', cmd: 'leave', tone: 'info', group: 'crew' });
+    out.push({ label: 'leave', cmd: 'leave', tone: 'info', group: 'crew' });
     return out;
   }
   return [];
@@ -310,7 +319,7 @@ function trigger(a: ActionButton, el?: HTMLElement) {
 function renderActions() {
   actionsEl.replaceChildren();
   buttonByKey.clear();
-  const list = lastScene ? lastActions : lobbyActions();
+  const list = storyLocked ? [] : lastScene ? lastActions : lobbyActions();
   shownActions = list;
   const fighting = lastScene?.view === 'combat' || lastScene?.view === 'boss';
   actionsEl.classList.toggle('fighting', !!fighting);
@@ -361,14 +370,29 @@ function renderActions() {
   if (!list.length) {
     const hint = document.createElement('span');
     hint.className = 'act-hint';
-    hint.textContent = lastScene ? (lastScene.view === 'end' ? 'the story is over' : 'listen…') : 'open the menu to begin';
+    hint.textContent = storyLocked ? `${storySpeaker ? `${storySpeaker} is speaking` : 'Story'} · click the message to continue` : lastScene ? (lastScene.view === 'end' ? 'the story is over' : 'listen…') : 'open the menu to begin';
     actionsEl.append(hint);
   }
 }
 
 document.addEventListener('keydown', (e) => {
+  if (!worldMap.hidden && e.key === 'Escape') {
+    e.preventDefault();
+    closeWorldMap();
+    return;
+  }
   if (menuOpen()) {
     if (e.key === 'Escape' && canCloseMenu()) closeMenu();
+    else if (['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(e.key)) {
+      const choices = [...menuEl.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)')];
+      if (!choices.length) return;
+      e.preventDefault();
+      const current = choices.indexOf(document.activeElement as HTMLElement);
+      const step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : -1;
+      const next = current < 0 ? (step > 0 ? 0 : choices.length - 1) : (current + step + choices.length) % choices.length;
+      choices[next]!.focus();
+      sound.play('click');
+    }
     return;
   }
   if (!resultsEl.hidden && (e.key === 'Enter' || e.key === 'Escape')) {
@@ -408,8 +432,9 @@ function memberChip(m: HudMember) {
   const classes = m.classes.length ? ` <i>${esc(m.classes.join('+'))}</i>` : '';
   const points = lastScene?.scores?.find((s) => s.handle === m.handle)?.points;
   const pts = points !== undefined ? ` <b class="pts">${points}</b>` : '';
-  const mark = m.host ? ' ★' : m.ready === true ? ' <em class="ok">ready</em>' : m.ready === false ? ' <em>choosing</em>' : '';
-  return chip(`${av}${esc(m.handle)}${classes}${pts}${mark}`, m.you ? 'you' : '');
+  const waiting = lastScene?.waitingForReady;
+  const state = m.ready === true ? ' <em class="ok">ready</em>' : m.ready === false ? ` <em>${waiting ? 'not ready' : 'choosing'}</em>` : '';
+  return chip(`${av}${esc(m.handle)}${classes}${pts}${m.host ? ' ★' : ''}${state}`, m.you ? 'you' : '');
 }
 
 function renderHud(h: HudState) {
@@ -436,6 +461,93 @@ function renderHud(h: HudState) {
     <div class="row">${party}${boons ? `<span class="sep"></span>${boons}` : ''}</div>`;
 }
 
+// ---------------------------------------------------------------- world map
+
+const ROUTES: Record<ModeId, { name: string; goal: string }[]> = {
+  adventure: [
+    { name: 'Hall of Names', goal: 'Learn whose lives paid for ECHO’s seal' },
+    { name: 'Drowned Market', goal: 'Silence the bell beneath the water' },
+    { name: 'Bridge of Static', goal: 'Cross the broken span together' },
+    { name: 'The Oracle', goal: 'Face ECHO’s confession' },
+    { name: 'Castle Ashenwake', goal: 'Enter the upside-down fortress' },
+    { name: 'The Moonkennel', goal: 'Harvest a beast-forged relic' },
+    { name: 'Oracle’s Price', goal: 'Ask what victory will awaken' },
+    { name: 'Glass Cathedral', goal: 'Break the future that flatters you' },
+    { name: 'Inverted Keep', goal: 'Learn what ECHO truly is' },
+    { name: 'Eclipse Throne', goal: 'Defeat Noctyra and open the last glyph' },
+  ],
+  heist: [
+    { name: "Fixer's Den", goal: 'Choose your way into the tower' },
+    { name: 'Corp Tower', goal: 'Pass the first defense' },
+    { name: 'Vault Floor', goal: 'Crack the inner lock' },
+    { name: 'The Vault', goal: 'Decide the wyrm’s fate' },
+    { name: 'Escape', goal: 'Get the crew out alive' },
+  ],
+  survival: [
+    { name: 'First Day', goal: 'Prepare the safehouse' },
+    { name: 'First Night', goal: 'Hold the line' },
+    { name: 'Second Day', goal: 'Find help beyond the walls' },
+    { name: 'The Seal', goal: 'Cut off the rising dark' },
+    { name: 'Last Night', goal: 'Survive until dawn' },
+  ],
+  daily: [
+    { name: 'Today’s Omen', goal: 'Choose the sign you will follow' },
+    { name: 'The Hunt', goal: 'Defeat an evolved beast' },
+    { name: 'Warden’s Lock', goal: 'Open the living glyph sequence' },
+    { name: 'Omen Vault', goal: 'Harvest today’s relic' },
+  ],
+  tutorial: [
+    { name: 'Read the Enemy', goal: 'Answer each monster move' },
+    { name: 'Glyph Lock', goal: 'Pass information between roles' },
+    { name: 'Words', goal: 'Win a character over' },
+  ],
+};
+
+const worldMap = $('world-map');
+const mapBtn = $<HTMLButtonElement>('map-btn');
+let mapJourneyFrom: number | undefined;
+
+function renderWorldMap(s: SceneState) {
+  const route = ROUTES[s.story];
+  const current = Math.min(route.length, s.chapter.index);
+  const meterGoal = s.story === 'adventure' ? 'Defeat Noctyra, the Eclipse Sovereign' : s.story === 'heist' ? 'Escape with the wyrm’s heart' : s.story === 'survival' ? 'Reach dawn' : s.story === 'daily' ? 'Return with today’s relic' : 'Complete training';
+  const nodes = route.map((stop, i) => {
+    const n = i + 1;
+    const state = n < current ? 'done' : n === current ? 'current' : 'ahead';
+    const traveler = state === 'current' && mapJourneyFrom && current > mapJourneyFrom
+      ? `<img class="map-traveler" style="--map-travel:${(current - mapJourneyFrom) * 154}px" src="${avatarDataUrl(avatarSeed(Progress.name, 0), s.party.find((m) => m.you)?.classes ?? [], 2)}" alt="your Joe moving to this milestone">`
+      : '';
+    const landmark = ['◇', '≋', '⌁', '◉', '♜', '☾', '✧', '❖', '∞', '♛'][i] ?? '◆';
+    return `<button class="map-node ${state}" data-map-node="${i}" type="button" aria-current="${state === 'current' ? 'step' : 'false'}"><span><i>${landmark}</i><em>${state === 'done' ? '✓' : n}</em>${traveler}</span><b>${esc(stop.name)}</b><small>${state === 'done' ? 'cleared' : state === 'current' ? 'you are here' : 'shrouded'}</small></button>`;
+  }).join('<i class="map-link"></i>');
+  worldMap.innerHTML = `<div class="map-panel"><div class="map-head"><div><small>NEO-AVALON // LIVING ROUTE</small><h2>${esc(STORIES[s.story].title)}</h2></div><button id="map-close" type="button" aria-label="close map">✕</button></div><div class="map-goal"><span>FINAL GOAL</span><b>${esc(meterGoal)}</b><small>Keep ${esc(s.meter.name)} below 100%</small></div><div class="map-route">${nodes}</div><div id="map-detail" class="map-detail"><span>${mapJourneyFrom ? 'MILESTONE REACHED' : 'CURRENT MILESTONE'}</span><b>${esc(route[current - 1]?.goal ?? meterGoal)}</b><small>Chapter ${current} of ${route.length}</small></div>${mapJourneyFrom ? '<button id="map-continue" class="map-continue" type="button">continue the journey ▶</button>' : ''}</div>`;
+  $('map-close').onclick = closeWorldMap;
+  const continueButton = worldMap.querySelector<HTMLButtonElement>('#map-continue');
+  if (continueButton) continueButton.onclick = closeWorldMap;
+  for (const button of worldMap.querySelectorAll<HTMLButtonElement>('[data-map-node]')) button.onclick = () => {
+    const i = Number(button.dataset.mapNode);
+    const stop = route[i]!;
+    const state = i + 1 < current ? 'Milestone complete' : i + 1 === current ? 'Current milestone' : 'Upcoming milestone';
+    $('map-detail').innerHTML = `<span>${state.toUpperCase()}</span><b>${esc(stop.goal)}</b><small>${esc(stop.name)} · chapter ${i + 1}</small>`;
+  };
+}
+
+function openWorldMap(from?: number) {
+  if (!lastScene) return;
+  mapJourneyFrom = from;
+  renderWorldMap(lastScene);
+  worldMap.hidden = false;
+  mapBtn.setAttribute('aria-pressed', 'true');
+}
+
+function closeWorldMap() {
+  worldMap.hidden = true;
+  mapJourneyFrom = undefined;
+  mapBtn.setAttribute('aria-pressed', 'false');
+}
+
+mapBtn.onclick = () => worldMap.hidden ? openWorldMap() : closeWorldMap();
+
 // ---------------------------------------------------------------- results: stars, scores, achievements
 
 const resultsEl = $('results');
@@ -449,7 +561,9 @@ function showResults(r: RunResult) {
   const key = `${r.story}:${r.title}:${r.seconds}:${r.team}`;
   if (recordedRun === key) return;
   recordedRun = key;
-  const fresh = Progress.record(r);
+  const rewards = Progress.record(r);
+  send({ type: 'inventory', inventory: Progress.inventory });
+  const fresh = rewards.achievements;
   const me = r.players.find((p) => p.you);
   const rows = [...r.players]
     .sort((a, b) => b.points - a.points)
@@ -473,9 +587,12 @@ function showResults(r: RunResult) {
       <div class="stars">${stars(r.stars)}</div>
       <div class="totals"><span>team score <b>${r.team}</b></span>${me ? `<span>your points <b>${me.points}</b></span>` : ''}${r.mvp ? `<span>Warden’s pick <b>${esc(r.mvp)}</b></span>` : ''}</div>
       <table>${rows}</table>
+      ${Object.keys(rewards.xp).length ? `<div class="run-rewards"><h3>ROLE MASTERY</h3>${Object.entries(rewards.xp).map(([role, xp]) => `<span>+${xp} ${esc(role)} XP</span>`).join('')}</div>` : ''}
+      ${rewards.artifact ? `<div class="quest-artifact ${rewards.newArtifact ? 'new' : ''}"><span>${rewards.artifact.icon}</span><div><small>${rewards.newArtifact ? 'NEW QUEST ARTIFACT' : 'QUEST ARTIFACT SECURED'}</small><b>${esc(rewards.artifact.name)}</b><p>${esc(rewards.artifact.desc)}</p></div></div>` : ''}
+      ${rewards.items.length ? `<div class="run-rewards finds"><h3>ITEMS RECEIVED</h3>${rewards.items.map((item) => `<span>${item.icon} ${esc(item.name)} <small>${item.rarity} · +${item.power} ${item.kind}</small></span>`).join('')}</div>` : ''}
       ${fresh.length ? `<div class="unlocked"><h3>achievements unlocked</h3>${fresh.map((a) => `<span class="ach on">${a.icon} ${esc(a.name)}</span>`).join('')}</div>` : ''}
       <p class="muted">${r.story === 'tutorial' ? 'You are ready for a real crew.' : r.win ? 'Stars come from how much of the meter you kept clear.' : 'The Warden keeps your points. Try again from the menu.'}</p>
-      <button type="button" id="results-ok"><kbd>Enter</kbd> continue</button>
+      <button type="button" id="results-ok"><kbd>Enter</kbd> ${r.story === 'tutorial' ? 'continue' : 'view journey'}</button>
     </div>`;
   resultsEl.hidden = false;
   $('results-ok').onclick = hideResults;
@@ -484,12 +601,16 @@ function showResults(r: RunResult) {
 
 function hideResults() {
   resultsEl.hidden = true;
+  if (lastScene?.result && lastScene.story !== 'tutorial') openWorldMap(Math.max(1, lastScene.chapter.index - 1));
 }
 
 // ---------------------------------------------------------------- the main menu
 
 const menuEl = $('menu');
-let panel: 'main' | 'join' | 'controls' | 'past' | 'achievements' = 'main';
+type MenuPanel = 'main' | 'multiplayer' | 'join' | 'solo-role' | 'solo-difficulty' | 'solo-story' | 'inventory' | 'controls' | 'past' | 'achievements';
+let panel: MenuPanel = 'main';
+let soloRole: ClassId = 'rogue';
+let soloDifficulty: 'easy' | 'medium' | 'hard' = 'medium';
 
 const menuOpen = () => !menuEl.hidden;
 const inRoom = () => lastHud?.mode === 'safehouse' || lastHud?.mode === 'delve';
@@ -504,15 +625,7 @@ function goLandscape() {
 }
 
 function callsign(): string | undefined {
-  const input = menuEl.querySelector<HTMLInputElement>('#callsign');
-  const name = (input?.value ?? Progress.name).trim();
-  if (!NAME_RE.test(name)) {
-    input?.focus();
-    menuEl.querySelector('.name-error')?.classList.add('show');
-    return undefined;
-  }
-  Progress.name = name;
-  return name;
+  return Progress.name;
 }
 
 /** Everything the menu does goes through here: it unlocks sound and makes sure we have a name. */
@@ -523,16 +636,15 @@ function menuAction(fn: () => void) {
   const name = callsign();
   if (!name) return;
   if (myHandle && myHandle !== name) {
-    // a new callsign means a fresh connection
     pendingAfterConnect = fn;
     connect();
-    send({ type: 'line', text: name });
+    send({ type: 'hello', name, inventory: Progress.inventory });
     myHandle = name;
     closeMenu();
     return;
   }
   if (!myHandle) {
-    send({ type: 'line', text: name });
+    send({ type: 'hello', name, inventory: Progress.inventory });
     myHandle = name;
   } else if (inRoom()) run('leave');
   fn();
@@ -545,32 +657,71 @@ function renderMenu() {
   const unlocked = Progress.unlocked;
   const got = ACHIEVEMENTS.filter((a) => unlocked[a.id]).length;
   const back = inRoom() ? `<button type="button" class="big" data-act="back"><span>▶</span> back to the ${lastHud?.mode === 'delve' ? 'story' : 'safehouse'}</button>` : '';
+  const name = Progress.name;
+  const avatar = avatarDataUrl(avatarSeed(name, 0), [], 3);
+  const mastery = Progress.mastery;
+  const daily = Progress.daily;
+  const masteryCards = (['rogue', 'mage', 'cleric'] as ClassId[]).map((role) => {
+    const xp = mastery[role] ?? 0;
+    const level = Progress.roleLevel(role);
+    const within = xp % 200;
+    return `<div class="mastery"><b>${role}</b><span>level ${level}</span><i><u style="width:${within / 2}%"></u></i><small>${within}/200 XP</small></div>`;
+  }).join('');
   let body = '';
   if (panel === 'main') {
     body = `
-      <label class="field"><span>your callsign</span><input id="callsign" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(Progress.name)}" placeholder="2-16 letters or numbers" /></label>
-      <p class="name-error">Callsigns are 2-16 letters, numbers, - or _.</p>
+      <div class="identity"><img src="${avatar}" alt=""><div><small>YOUR JOE</small><b>${esc(name)}</b></div>${Progress.canReroll ? '<button type="button" data-act="reroll-name">reroll once</button>' : ''}</div>
+      <div class="mastery-grid">${masteryCards}</div>
       <div class="menu-buttons">
         ${back}
         ${cp ? `<button type="button" class="big go" data-act="resume"><span>⟲</span> continue <small>${esc(STORIES[cp.story].title)} · chapter ${cp.chapter}: ${esc(cp.title)}</small></button>` : ''}
-        <button type="button" class="big ${cp ? '' : 'go'}" data-act="new"><span>✦</span> new story <small>open a safehouse and invite your crew</small></button>
-        <button type="button" class="big" data-act="join"><span>⇥</span> join a crew <small>with a 4-letter code</small></button>
-        <button type="button" class="big ${Progress.trained ? '' : 'hot'}" data-act="tutorial"><span>🎓</span> training ${Progress.trained ? '' : '<em>start here</em>'} <small>learn the controls solo, no timer</small></button>
+        <button type="button" class="big go" data-act="single"><span>◆</span> single Joe <small>choose a role and train with two bot allies</small></button>
+        <button type="button" class="big ${daily.done ? '' : 'hot'}" data-act="daily"><span>${daily.done ? '✓' : '☾'}</span> daily quest <em>${daily.done ? 'complete' : 'today'}</em><small>one shifting dungeon · one harvest relic · about 10 minutes${daily.streak ? ` · ${daily.streak} day streak` : ''}</small></button>
+        <button type="button" class="big" data-act="multiplayer"><span>✦</span> multiplayer <small>create or join a crew with friends or other Joes</small></button>
+        <button type="button" class="big ${Progress.trained ? '' : 'hot'}" data-act="tutorial"><span>🎓</span> basic training ${Progress.trained ? '' : '<em>new</em>'} <small>learn relic loadouts, crew roles, and the journey loop</small></button>
         <div class="menu-row">
-          <button type="button" data-act="controls">controls</button>
-          <button type="button" data-act="past">past adventures</button>
+          <button type="button" data-act="inventory">safehouse vault ${Progress.artifacts.length}/${4}</button>
+          <button type="button" data-act="past">adventures</button>
           <button type="button" data-act="achievements">achievements ${got}/${ACHIEVEMENTS.length}</button>
         </div>
+        <button type="button" data-act="controls">controls</button>
       </div>`;
+  } else if (panel === 'multiplayer') {
+    const rooms = lastHud?.mode === 'street' ? (lastHud.rooms ?? []) : [];
+    body = `
+      <h2 class="menu-title">Multiplayer</h2>
+      <div class="menu-buttons"><button type="button" class="big go" data-act="new"><span>＋</span> create a crew <small>open a room and share its code</small></button><button type="button" class="big" data-act="join"><span>⌕</span> join with code</button></div>
+      <h3 class="section-title">OPEN CREWS</h3>
+      <div class="room-list">${rooms.length ? rooms.map((room) => `<button type="button" data-act="join-room" data-room="${room.code}"><b>${esc(room.host)}'s crew</b><span>${esc(STORIES[room.story].title)}</span><small>${room.players}/${room.max} Joes · ${room.code}</small></button>`).join('') : '<p class="muted">No open crews yet. Create one and be the first host.</p>'}</div>
+      <div class="menu-buttons"><button type="button" data-act="main">back</button></div>`;
+  } else if (panel === 'solo-role') {
+    body = `<h2 class="menu-title">Choose your role</h2><p class="muted">Your two bot allies fill the remaining roles.</p><div class="pick-grid">
+      <button type="button" data-act="role" data-role="rogue"><b>Rogue</b><small>harvest attack relics and open glyph locks</small></button>
+      <button type="button" data-act="role" data-role="mage"><b>Mage</b><small>harvest arcane relics and read hidden patterns</small></button>
+      <button type="button" data-act="role" data-role="cleric"><b>Cleric</b><small>harvest defense relics and protect the crew</small></button>
+      </div><div class="menu-buttons"><button type="button" data-act="main">back</button></div>`;
+  } else if (panel === 'solo-difficulty') {
+    body = `<h2 class="menu-title">Choose difficulty</h2><div class="pick-grid">
+      <button type="button" data-act="difficulty" data-difficulty="easy"><b>Easy</b><small>forgiving enemies · relaxed journey</small></button>
+      <button type="button" class="selected" data-act="difficulty" data-difficulty="medium"><b>Medium</b><small>standard enemies · balanced relic checks</small></button>
+      <button type="button" data-act="difficulty" data-difficulty="hard"><b>Hard</b><small>stronger enemies · rare relics recommended</small></button>
+      </div><div class="menu-buttons"><button type="button" data-act="solo-role">back</button></div>`;
+  } else if (panel === 'solo-story') {
+    body = `<h2 class="menu-title">Choose a side quest</h2><div class="menu-buttons"><button type="button" class="big hot" data-act="solo-go" data-story="daily"><span>☾</span>${esc(STORIES.daily.title)}<small>${esc(STORIES.daily.pitch)} · changes each run</small></button>${CREW_STORIES.map((id) => `<button type="button" class="big" data-act="solo-go" data-story="${id}"><span>◆</span>${esc(STORIES[id].title)}<small>${esc(STORIES[id].pitch)}</small></button>`).join('')}<button type="button" data-act="solo-difficulty">back</button></div>`;
   } else if (panel === 'join') {
     body = `
       <label class="field"><span>crew code</span><input id="code" maxlength="4" autocomplete="off" spellcheck="false" placeholder="ABCD" style="text-transform:uppercase" /></label>
       <div class="menu-buttons"><button type="button" class="big go" data-act="join-go"><span>⇥</span> join</button><button type="button" data-act="main">back</button></div>`;
+  } else if (panel === 'inventory') {
+    const owned = new Set(Progress.inventory);
+    const artifacts = Progress.artifacts;
+    const next = ITEMS.find((item) => !owned.has(item.id));
+    body = `<h2 class="menu-title">Safehouse Vault</h2><div class="vault-room"><div class="vault-glow"></div><h3>QUEST ARTIFACTS</h3><div class="artifact-shelf">${[...Array(4)].map((_, i) => { const artifact = artifacts[i]; return artifact ? `<div class="artifact"><span>${artifact.icon}</span><b>${esc(artifact.name)}</b><small>${esc(artifact.desc)}</small></div>` : '<div class="artifact empty"><span>◇</span><b>Empty plinth</b><small>Complete another quest</small></div>'; }).join('')}</div><h3>DUNGEON RELICS</h3><p class="muted">Relics can be earned by committed play or harvested immediately from the dungeon where they were forged.</p><div class="inventory">${ITEMS.map((item) => `<div class="item ${owned.has(item.id) ? `owned ${item.rarity}` : 'locked'}"><span>${owned.has(item.id) ? item.icon : '?'}</span><b>${owned.has(item.id) ? esc(item.name) : 'Undiscovered'}</b><small>${owned.has(item.id) ? `${item.rarity} · power ${item.power} · ${esc(item.effect)}` : `${Math.ceil(item.seconds / 60)} min · ${item.quests} quest${item.quests === 1 ? '' : 's'} · or harvest in a dungeon`}</small></div>`).join('')}</div></div>${next ? `<p class="muted">Follow daily omens and search optional castle paths to complete the collection.</p>` : '<p class="muted">Collection complete.</p>'}<div class="menu-buttons"><button type="button" data-act="main">back</button></div>`;
   } else if (panel === 'controls') {
     body = `
       <table class="controls">${CONTROLS.map((c) => `<tr><td><kbd>${esc(c.keys)}</kbd></td><td>${esc(c.what)}</td></tr>`).join('')}</table>
       <p class="muted">${touch ? 'On a phone, tap the round buttons on the right: they carry the same letters. Tap 💬 chat to open the log and its keyboard.' : 'On a phone, the same letters appear on round buttons beside the screen.'}</p>
-      <p class="muted">Each round has a timer. When it runs out the monster moves, and anyone who hasn’t chosen leaves the crew open: extra damage, and the Warden docks points.</p>
+      <p class="muted">Battles are automatic. Choose equipment before they begin; then watch each role reposition, counter the threat, and use the strongest strategy its relics allow.</p>
       <div class="menu-buttons"><button type="button" data-act="main">back</button></div>`;
   } else if (panel === 'past') {
     const runs = Progress.runs;
@@ -578,17 +729,15 @@ function renderMenu() {
       ${runs.length ? `<table class="past">${runs.slice(0, 12).map((r) => `<tr><td>${new Date(r.at).toLocaleDateString()}</td><td>${esc(STORIES[r.story].title)}</td><td class="${r.win ? 'win' : 'lose'}">${esc(r.title)}</td><td class="stars-sm">${'★'.repeat(r.stars)}${'☆'.repeat(3 - r.stars)}</td><td class="num">${r.points}</td></tr>`).join('')}</table>` : '<p class="muted">No adventures yet. Your finished stories will be listed here.</p>'}
       <p class="muted">Best: ${Math.max(0, ...runs.map((r) => r.points))} points · ${runs.reduce((s, r) => s + r.stars, 0)} stars in total. A global ranking is coming once accounts exist.</p>
       <div class="menu-buttons"><button type="button" data-act="main">back</button></div>`;
-  } else {
+  } else if (panel === 'achievements') {
     body = `
       <div class="achievements">${ACHIEVEMENTS.map((a: Achievement) => `<div class="ach ${unlocked[a.id] ? 'on' : ''}"><span class="icon">${a.icon}</span><b>${esc(a.name)}</b><small>${esc(a.desc)}</small></div>`).join('')}</div>
       <div class="menu-buttons"><button type="button" data-act="main">back</button></div>`;
   }
-  menuEl.innerHTML = `<div class="menu-card"><h1>LAST LIGHT</h1><p class="tagline">a co-op story for 2-4 players · beneath Neo-Avalon an ancient wyrm is waking</p>${body}</div>`;
+  menuEl.innerHTML = `<div class="menu-card"><button class="menu-close" type="button" data-act="close-menu" aria-label="close menu">✕ close</button><h1>LAST LIGHT</h1><p class="tagline">a story adventure · solo or crew · beneath Neo-Avalon an ancient wyrm is waking</p>${body}</div>`;
   const code = menuEl.querySelector<HTMLInputElement>('#code');
-  code?.focus();
-  menuEl.querySelector<HTMLInputElement>('#callsign')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') menuEl.querySelector<HTMLButtonElement>('button.go')?.click();
-  });
+  if (code) code.focus();
+  else menuEl.querySelector<HTMLElement>('.menu-buttons button, .pick-grid button, .room-list button')?.focus();
   code?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') menuEl.querySelector<HTMLButtonElement>('[data-act="join-go"]')?.click();
   });
@@ -600,11 +749,45 @@ menuEl.addEventListener('click', (e) => {
   const act = btn.dataset.act!;
   sound.unlock();
   switch (act) {
+    case 'close-menu':
+      sound.play('click');
+      return closeMenu();
     case 'back':
       sound.play('click');
       return closeMenu();
     case 'new':
       return menuAction(() => run('create'));
+    case 'single':
+      panel = 'solo-role';
+      return renderMenu();
+    case 'daily':
+      panel = 'solo-role';
+      return renderMenu();
+    case 'role':
+      soloRole = btn.dataset.role as ClassId;
+      panel = 'solo-difficulty';
+      return renderMenu();
+    case 'difficulty':
+      soloDifficulty = btn.dataset.difficulty as typeof soloDifficulty;
+      panel = 'solo-story';
+      return renderMenu();
+    case 'solo-go':
+      return menuAction(() => run(`solo ${soloRole} ${soloDifficulty} ${btn.dataset.story}`));
+    case 'multiplayer':
+      if (!myHandle) {
+        send({ type: 'hello', name: Progress.name, inventory: Progress.inventory });
+        myHandle = Progress.name;
+      }
+      panel = 'multiplayer';
+      return renderMenu();
+    case 'join-room':
+      return menuAction(() => run(`join ${btn.dataset.room}`));
+    case 'reroll-name':
+      Progress.rerollIdentity();
+      myHandle = '';
+      pendingAfterConnect = () => send({ type: 'hello', name: Progress.name, inventory: Progress.inventory });
+      connect();
+      return renderMenu();
     case 'tutorial':
       return menuAction(() => run('tutorial'));
     case 'resume': {
@@ -619,7 +802,6 @@ menuEl.addEventListener('click', (e) => {
       return menuAction(() => run(`join ${code}`));
     }
     case 'join':
-      if (!callsign()) return;
       sound.play('click');
       panel = 'join';
       return renderMenu();
@@ -632,8 +814,8 @@ menuEl.addEventListener('click', (e) => {
 
 function openMenu() {
   panel = 'main';
-  renderMenu();
   menuEl.hidden = false;
+  renderMenu();
   document.body.classList.add('menu-open');
   sound.setMood('lobby');
 }
@@ -666,16 +848,19 @@ function apply(msg: ServerMessage) {
     case 'hud':
       lastHud = msg.hud;
       renderHud(msg.hud);
+      if (menuOpen() && panel === 'multiplayer') renderMenu();
       if (msg.hud.mode === 'delve') gameConsole.wyrmColor = msg.hud.wyrm.color;
       if (msg.hud.mode === 'street' && msg.hud.handle) myHandle = msg.hud.handle;
       if (msg.hud.mode !== 'delve') {
         lastScene = undefined;
         lastActions = [];
         stage.classList.remove('fight');
+        mapBtn.hidden = true;
+        closeWorldMap();
         hideResults();
         scene.setLobby(
           msg.hud.mode === 'street'
-            ? { title: 'LAST LIGHT', subtitle: 'create a safehouse, or join your crew', ...(msg.hud.handle ? { crew: [{ handle: msg.hud.handle, avatar: msg.hud.avatar ?? 0, you: true }] } : {}) }
+            ? { title: 'LAST LIGHT', subtitle: 'choose a side quest, or join a crew', ...(msg.hud.handle ? { crew: [{ handle: msg.hud.handle, avatar: msg.hud.avatar ?? 0, you: true }] } : {}) }
             : { title: `SAFEHOUSE ${msg.hud.code}`, subtitle: `${STORIES[msg.hud.story].title}: ${msg.hud.resume ? `resuming at chapter ${msg.hud.resume.chapter}` : STORIES[msg.hud.story].pitch}`, crew: msg.hud.party.map((m) => ({ handle: m.handle, avatar: m.avatar, host: m.host, you: m.you })) },
         );
         renderActions();
@@ -683,14 +868,20 @@ function apply(msg: ServerMessage) {
       }
       break;
     case 'scene':
+      const previousScene = lastScene;
       lastScene = msg.scene;
       (window as unknown as { __scene?: SceneState }).__scene = msg.scene; // for automated playtests
       lastActions = msg.actions;
       scene.setScene(msg.scene);
+      mapBtn.hidden = false;
+      if (!worldMap.hidden) renderWorldMap(msg.scene);
       stage.classList.toggle('fight', msg.scene.view === 'combat' || msg.scene.view === 'boss');
       if (!menuOpen()) sound.setMood(msg.scene.music);
       if (lastHud) renderHud(lastHud);
       renderActions();
+      if (previousScene && previousScene.story === msg.scene.story && msg.scene.chapter.index > previousScene.chapter.index) {
+        setTimeout(() => openWorldMap(previousScene.chapter.index), 500);
+      }
       if (msg.scene.result) setTimeout(() => showResults(msg.scene.result!), 2600);
       break;
     case 'fx': {

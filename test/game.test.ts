@@ -3,12 +3,12 @@ import { test } from 'node:test';
 import type { ModeId } from '../src/shared/protocol.js';
 import { BREEDS } from '../src/server/game/breeds.js';
 import { FOES, NUM } from '../src/server/game/content.js';
-import { Game } from '../src/server/game/game.js';
+import { Game, chapterDifficulty } from '../src/server/game/game.js';
 import { NPCS, ScriptedJudge, parseVerdict } from '../src/server/game/parley.js';
 import { STORIES, type StoryNode } from '../src/server/game/story.js';
 import { FakePlayer, fixedJudge, playGame } from './bot.js';
 
-const MODES: ModeId[] = ['adventure', 'heist', 'survival'];
+const MODES: ModeId[] = ['adventure', 'heist', 'survival', 'daily'];
 
 /** Every node id a step or option can lead to (function gotos are probed with both flag states). */
 function exits(node: StoryNode): string[] {
@@ -35,6 +35,7 @@ test('every story graph is closed: no dangling links, every node reachable, ever
       const node = story.nodes[id];
       assert.ok(node, `${mode}: missing node ${id}`);
       if (node.step.kind === 'fight') assert.ok(FOES[node.step.foe], `${mode}/${id}: unknown foe ${node.step.foe}`);
+      if (node.step.kind === 'boss' && node.step.foe) assert.ok(FOES[node.step.foe], `${mode}/${id}: unknown boss ${node.step.foe}`);
       for (const next of exits(node)) queue.push(next);
     }
     assert.deepEqual([...seen].sort(), Object.keys(story.nodes).sort(), `${mode}: unreachable nodes`);
@@ -42,7 +43,13 @@ test('every story graph is closed: no dangling links, every node reachable, ever
   }
 });
 
-test('every story can be finished by a sensible crew, whatever it chooses', async () => {
+test('threat rises linearly from 1× to 5× over a story', () => {
+  assert.equal(chapterDifficulty(1, 10), 1);
+  assert.equal(chapterDifficulty(10, 10), 5);
+  assert.equal(chapterDifficulty(5, 9), 3);
+});
+
+test('every story is winnable by a prepared crew; the hour campaign punishes risky routes', async () => {
   for (const mode of MODES) {
     let wins = 0;
     for (let seed = 1; seed <= 12; seed++) {
@@ -50,7 +57,8 @@ test('every story can be finished by a sensible crew, whatever it chooses', asyn
       assert.ok(result, `${mode} seed ${seed} finished`);
       if (result.win) wins++;
     }
-    assert.ok(wins >= 9, `${mode}: a smart crew should usually win (${wins}/12)`);
+    const minimum = mode === 'adventure' ? 1 : 9;
+    assert.ok(wins >= minimum, `${mode}: expected at least ${minimum} prepared wins (${wins}/12)`);
   }
 });
 
@@ -63,7 +71,7 @@ test('choices change the story: different flags lead to different endings', asyn
   assert.ok(first.visited.includes('vault_open') && second.visited.includes('vault_guard'));
 });
 
-test('the Mage alone sees the foe’s next move; the crew sees what the Mage calls', () => {
+test('a crew chooses loadouts, then every role fights automatically', () => {
   const players = [new FakePlayer('a', 'neo'), new FakePlayer('b', 'trinity'), new FakePlayer('c', 'cy')];
   const game = new Game(players, { judge: new ScriptedJudge(), story: 'adventure', seed: 5, roundMs: 0, voteMs: 0, onEnd: () => {} });
   for (const p of players) game.handle(p.id, 'vote 1'); // fight the Sentinel
@@ -72,40 +80,55 @@ test('the Mage alone sees the foe’s next move; the crew sees what the Mage cal
   const others = players.filter((p) => p !== mage);
   assert.ok(mage.scene!.foe!.intent, 'the Mage sees it');
   for (const p of others) assert.equal(p.scene!.foe!.intent, undefined, `${p.handle} does not`);
-  game.handle(mage.id, 'call attack');
-  for (const p of others) assert.match(p.scene!.foe!.called!.label, /ATTACK/);
-  assert.ok(others[0]!.feeds.some((f) => f.kind === 'chat' && f.text.includes('ATTACK')), 'the call pops up as a message');
+  assert.ok(players.every((p) => p.actions.some((a) => a.cmd === 'ready')));
+  assert.ok(players.every((p) => !p.actions.some((a) => ['strike', 'hex', 'ward'].includes(a.cmd))), 'there are no manual fight controls');
+  for (const p of players) game.handle(p.id, 'ready');
+  const acts = players.flatMap((p) => p.fxs).filter((fx) => fx.kind === 'act');
+  assert.ok(acts.some((fx) => fx.kind === 'act' && fx.cls === 'rogue'));
+  assert.ok(acts.some((fx) => fx.kind === 'act' && fx.cls === 'mage'));
+  assert.ok(acts.some((fx) => fx.kind === 'act' && fx.cls === 'cleric'));
 });
 
-test('Wards are limited per chapter', () => {
+test('the automatic Cleric spends the chapter’s limited Wards efficiently', () => {
   const players = [new FakePlayer('a', 'neo')];
   const game = new Game(players, { judge: new ScriptedJudge(), story: 'adventure', seed: 5, roundMs: 0, voteMs: 0, onEnd: () => {} });
   game.handle('a', 'vote 1');
   const before = game.wardsRemaining;
   assert.equal(before, NUM.wardsPerChapter);
-  for (let r = 0; r < before + 1 && game.phase === 'combat'; r++) {
-    game.handle('a', 'ward');
-    game.handle('a', 'hex');
-    game.handle('a', 'strike');
-  }
-  if (game.phase === 'combat') {
-    game.handle('a', 'ward');
-    assert.ok(players[0]!.feeds.some((f) => f.kind === 'tip' && /No Wards left/.test(f.text)));
-  }
-  assert.ok(game.wardsRemaining <= before);
+  game.handle('a', 'ready');
+  assert.ok(game.wardsRemaining < before);
+});
+
+test('chosen relic quality materially changes automatic battle strength', () => {
+  const fight = (inventory: string[], equipped: string[]) => {
+    const player = new FakePlayer('a', 'neo');
+    const game = new Game([player], { judge: new ScriptedJudge(), story: 'adventure', seed: 5, roundMs: 0, voteMs: 0, inventory: { a: inventory }, onEnd: () => {} });
+    game.handle('a', 'vote 1');
+    for (const id of equipped) game.handle('a', `equip ${id}`);
+    if (equipped.length) assert.equal(player.scene!.loadout!.selected.length, equipped.length);
+    game.handle('a', 'ready');
+    return player.fxs.find((fx) => fx.kind === 'act' && fx.move === 'hex' && fx.amount)?.amount ?? 0;
+  };
+  const basic = fight([], []);
+  const epic = fight(['starless-book'], ['starless-book']);
+  assert.ok(epic >= basic + 14, `${epic} magic damage should decisively exceed basic gear's ${basic}`);
 });
 
 test('glyph locks: only the Rogue presses, only the Mage sees, mistakes cost and reset', () => {
   const players = [new FakePlayer('a', 'neo'), new FakePlayer('b', 'trinity'), new FakePlayer('c', 'cy')];
   const game = new Game(players, { judge: new ScriptedJudge(), story: 'adventure', seed: 2, roundMs: 0, voteMs: 0, onEnd: () => {} });
-  // gate: sneak (no fight), market: loot (no fight) → bridge puzzle
+  // gate: sneak, leave the old badge, market: loot → the drowned bell puzzle
+  for (const p of players) game.handle(p.id, 'vote 2');
   for (const p of players) game.handle(p.id, 'vote 2');
   for (const p of players) game.handle(p.id, 'vote 2');
   assert.equal(game.phase, 'puzzle');
+  for (const p of players) game.handle(p.id, 'ready');
   const rogue = players.find((p) => game.classes.get(p.id)!.includes('rogue'))!;
   const mage = players.find((p) => game.classes.get(p.id)!.includes('mage'))!;
   assert.ok(mage.scene!.puzzle!.sequence, 'the Mage sees the order');
   assert.equal(rogue.scene!.puzzle!.sequence, undefined, 'the Rogue does not');
+  game.handle(mage.id, `show ${game.puzzle!.sequence[0]}`);
+  assert.equal(rogue.scene!.puzzle!.shown, game.puzzle!.sequence[0], 'the Mage signal stays on the Rogue screen');
   game.handle(mage.id, `glyph ${game.puzzle!.sequence[0]}`);
   assert.equal(game.puzzle!.progress, 0, 'the Mage cannot press');
   const wrong = ['moon', 'eye', 'serpent', 'crown', 'key'].find((g) => g !== game.puzzle!.sequence[0])!;
@@ -113,7 +136,7 @@ test('glyph locks: only the Rogue presses, only the Mage sees, mistakes cost and
   game.handle(rogue.id, `glyph ${wrong}`);
   assert.equal(game.meter, meter + NUM.glyphMissCost);
   for (const g of game.puzzle!.sequence) game.handle(rogue.id, `glyph ${g}`);
-  assert.equal(game.nodeId, 'oracle', 'solved: on to the Oracle');
+  assert.equal(game.nodeId, 'bridge', 'solved: on to the Bridge of Static');
 });
 
 test('conversations: good words win the character over, bad ones fail', async () => {

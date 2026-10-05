@@ -16,24 +16,42 @@ interface Line {
   kind: Portrait['type'];
 }
 
+/** Keep coordinator messages readable without rewriting every story node. */
+export function messageChunks(text: string, max = 96): string[] {
+  const clean = text.trim().replace(/^["“](.*)["”]$/s, '$1');
+  const sentences = clean.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map((s) => s.trim()).filter((s) => !!s && !/^["'“”‘’]+$/.test(s)) ?? [clean];
+  const out: string[] = [];
+  for (const sentence of sentences) {
+    let line = '';
+    for (const word of sentence.split(/\s+/)) {
+      if (line && `${line} ${word}`.length > max) {
+        out.push(line);
+        line = word;
+      } else line = line ? `${line} ${word}` : word;
+    }
+    if (line) out.push(line);
+  }
+  return out;
+}
+
 export class GameConsole {
   private readonly dialogue: HTMLElement;
   private readonly portrait: HTMLImageElement;
   private readonly speaker: HTMLElement;
   private readonly line: HTMLElement;
   private readonly more: HTMLElement;
+  private readonly skipBtn: HTMLButtonElement;
   private readonly toasts: HTMLElement;
   private readonly chats: HTMLElement;
-  private readonly tipEl: HTMLElement;
   private queue: Line[] = [];
   private current?: Line;
+  private skipping = false;
   private typed = 0;
   private typer?: number;
-  private holder?: number;
-  private hider?: number;
-  private tipTimer?: number;
   wyrmColor: WyrmColor = 'red';
-  onLine?: (kind: Portrait['type']) => void;
+  onLine?: (kind: Portrait['type'], speaker: string) => void;
+  onAdvance?: () => void;
+  onReadingChange?: (reading: boolean, speaker?: string) => void;
 
   constructor(stage: HTMLElement) {
     const root = document.createElement('div');
@@ -44,20 +62,28 @@ export class GameConsole {
       <div class="dialogue" role="log" aria-live="polite">
         <img class="portrait" alt="">
         <div class="body"><div class="speaker"></div><div class="line"></div></div>
-        <span class="more">▸</span>
-      </div>
-      <div class="tip" role="status"></div>`;
+        <button class="skip-briefing" type="button">skip briefing</button>
+        <span class="more">click ▸</span>
+      </div>`;
     stage.append(root);
     this.dialogue = root.querySelector('.dialogue')!;
     this.portrait = root.querySelector('.portrait')!;
     this.speaker = root.querySelector('.speaker')!;
     this.line = root.querySelector('.line')!;
     this.more = root.querySelector('.more')!;
+    this.skipBtn = root.querySelector('.skip-briefing')!;
     this.toasts = root.querySelector('.toasts')!;
     this.chats = root.querySelector('.chats')!;
-    this.tipEl = root.querySelector('.tip')!;
-    this.dialogue.addEventListener('click', () => this.advance());
-    this.tipEl.addEventListener('click', () => this.tipEl.classList.remove('show'));
+    this.dialogue.addEventListener('click', () => {
+      this.onAdvance?.();
+      this.advance();
+    });
+    this.skipBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.skipping = true;
+      this.queue = [];
+      this.finishHide();
+    });
   }
 
   push(item: FeedItem) {
@@ -69,52 +95,55 @@ export class GameConsole {
       case 'chat':
         return this.chat(item.from, item.text);
       case 'tip':
-        return this.tip(item.text);
+        return this.story('ECHO', item.text, { type: 'narrator' });
     }
   }
 
   clear() {
+    this.skipping = false;
     this.queue = [];
     this.finishHide();
   }
 
   // ---------------------------------------------------------------- dialogue
 
-  private portraitUrl(p: Portrait) {
+  private portraitUrl(p: Portrait, speaker: string) {
+    if (speaker === 'ECHO') return avatarDataUrl(avatarSeed('ECHO', 7), ['mage'], 4);
     if (p.type === 'player') return avatarDataUrl(avatarSeed(p.handle, p.avatar), p.classes, 4);
     if (p.type === 'npc') return portraitDataUrl(p.id, WYRM_COLORS[this.wyrmColor]);
     return portraitDataUrl('narrator');
   }
 
   private story(speaker: string, text: string, portrait: Portrait) {
-    this.queue.push({ speaker, text, portrait: this.portraitUrl(portrait), kind: portrait.type });
-    // never fall more than a few lines behind what is happening on screen
-    while (this.queue.length > 4) this.queue.shift();
+    if (this.skipping) return;
+    const name = speaker;
+    for (const chunk of messageChunks(text)) this.queue.push({ speaker: name, text: chunk, portrait: this.portraitUrl(portrait, name), kind: portrait.type });
     if (!this.current) this.next();
     else this.more.classList.add('show');
   }
 
   private next() {
-    clearTimeout(this.holder);
-    clearTimeout(this.hider);
     clearInterval(this.typer);
     const line = this.queue.shift();
     this.current = line;
     if (!line) {
-      // nothing left to say: fade the box out so the scene can breathe
-      this.hider = window.setTimeout(() => this.dialogue.classList.remove('show'), 4500);
+      this.dialogue.classList.remove('show');
+      this.onReadingChange?.(false);
       return;
     }
-    this.onLine?.(line.kind);
+    this.onReadingChange?.(true, line.speaker);
+    this.onLine?.(line.kind, line.speaker);
     this.dialogue.classList.add('show');
     this.dialogue.classList.toggle('narrator', line.kind === 'narrator');
     this.dialogue.classList.toggle('player', line.kind === 'player');
+    this.dialogue.classList.toggle('narration', !line.speaker);
+    this.dialogue.classList.toggle('echo', line.speaker === 'ECHO');
     this.portrait.src = line.portrait;
     this.speaker.textContent = line.speaker;
     this.speaker.hidden = !line.speaker;
     this.line.textContent = '';
     this.typed = 0;
-    this.more.classList.toggle('show', this.queue.length > 0);
+    this.more.classList.remove('show');
     // speed up when the story is getting ahead of the reader
     const step = this.queue.length > 1 ? 6 : 3;
     this.typer = window.setInterval(() => {
@@ -130,9 +159,7 @@ export class GameConsole {
     clearInterval(this.typer);
     this.line.textContent = line.text;
     this.typed = line.text.length;
-    const hold = this.queue.length > 1 ? 900 : Math.min(4500, 1400 + line.text.length * 25);
-    clearTimeout(this.holder);
-    this.holder = window.setTimeout(() => this.next(), hold);
+    this.more.classList.add('show');
   }
 
   private advance() {
@@ -143,9 +170,9 @@ export class GameConsole {
 
   private finishHide() {
     clearInterval(this.typer);
-    clearTimeout(this.holder);
     this.current = undefined;
     this.dialogue.classList.remove('show');
+    this.onReadingChange?.(false);
   }
 
   // ---------------------------------------------------------------- notices, chat, tips
@@ -186,10 +213,4 @@ export class GameConsole {
     }, 6500);
   }
 
-  private tip(text: string) {
-    this.tipEl.textContent = text;
-    this.tipEl.classList.add('show');
-    clearTimeout(this.tipTimer);
-    this.tipTimer = window.setTimeout(() => this.tipEl.classList.remove('show'), 9000);
-  }
 }
